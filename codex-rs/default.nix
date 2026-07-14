@@ -2,9 +2,11 @@
   cmake,
   llvmPackages,
   openssl,
+  perl ? null,
   libcap ? null,
   rustPlatform,
   rustyV8Archive ? null,
+  rustyV8SrcBindingPath ? null,
   pkg-config,
   lib,
   stdenv,
@@ -15,6 +17,7 @@
   ...
 }:
 rustPlatform.buildRustPackage (_: {
+  env.RUSTFLAGS = lib.optionalString stdenv.hostPlatform.isMusl "-C target-feature=+crt-static";
   env.PKG_CONFIG_PATH = lib.makeSearchPathOutput "dev" "lib/pkgconfig" (
     [ openssl ] ++ lib.optionals stdenv.isLinux [ libcap ]
   );
@@ -22,6 +25,7 @@ rustPlatform.buildRustPackage (_: {
   inherit version;
   cargoLock.lockFile = ./Cargo.lock;
   env.RUSTY_V8_ARCHIVE = lib.optionalString (rustyV8Archive != null) "${rustyV8Archive}";
+  env.RUSTY_V8_SRC_BINDING_PATH = lib.optionalString (rustyV8SrcBindingPath != null) "${rustyV8SrcBindingPath}";
   doCheck = false;
   src = ./.;
 
@@ -38,6 +42,8 @@ rustPlatform.buildRustPackage (_: {
     llvmPackages.libclang.lib
     openssl
     pkg-config
+  ] ++ lib.optionals (perl != null) [
+    perl
   ] ++ lib.optionals stdenv.isLinux [
     libcap
   ];

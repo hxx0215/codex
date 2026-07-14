@@ -12,7 +12,7 @@
 
 ## 准备发布目录
 
-先按 [README.md](README.md) 编译，然后准备：
+先按 [README.md](README.md) 使用 `nix build .#sandbox-server` 构建静态包，然后准备：
 
 ```text
 dist/
@@ -21,13 +21,15 @@ dist/
 ```
 
 两个可执行文件放在同一目录时，server 会自动找到 Linux sandbox helper。
+它们可以复制到同 CPU 架构的其他 Linux 主机，目标机不需要安装 Nix，也不需要提供
+`/nix/store`。
 
 ## 运行示例
 
 从 `codex-rs/sandbox-server` 目录运行：
 
 ```bash
-CODEX_SANDBOX_SERVER=../target/release/codex-sandbox-server \
+CODEX_SANDBOX_SERVER=../../result/bin/codex-sandbox-server \
 deno run --allow-run --allow-env examples/deno_parent.ts
 ```
 
@@ -121,7 +123,8 @@ allowlist miss 期间原网络连接保持等待。`accept` 只放行一次，`a
 1. 先按默认 profile 调用 `command/exec`。
 2. 如果返回 `completed`，直接结束。
 3. 如果返回 `sandboxDenied`，调用 Deno 服务自己的真人审核回调。
-4. 回调批准后，以新的 request id 再次发送命令，并设置更宽松的 `sandboxPolicy`。
+4. 回调批准后返回 `workspaceWrite` decision 和最窄的绝对 `writableRoots`。
+5. `execWithApproval` 以新的 request id 重试命令，并关闭默认 `/tmp`、`$TMPDIR` 写权限。
 
 示例中的审批回调只是接口。生产服务应把命令、cwd、拒绝信息和权限差异发送到自己的管理
 界面，不要在 sandbox server 内增加审批状态。
@@ -130,17 +133,45 @@ allowlist miss 期间原网络连接保持等待。`accept` 只放行一次，`a
 const result = await execWithApproval(
   client,
   {
-    command: ["sh", "-lc", "touch generated.txt"],
+    command: [
+      "sh",
+      "-lc",
+      "printf updated > /home/alice/.config/my-app/state.txt",
+    ],
   },
   async (denied) => {
-    return await reviewService.requestHumanApproval({
-      command: "touch generated.txt",
+    const writableRoot = "/home/alice/.config/my-app";
+    const approved = await reviewService.requestHumanApproval({
+      command: "update my-app state",
       stderr: denied.stderr,
-      requestedPolicy: "dangerFullAccess",
+      requestedPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [writableRoot],
+      },
     });
+    return approved
+      ? { type: "workspaceWrite", writableRoots: [writableRoot] }
+      : { type: "decline" };
   },
 );
 ```
+
+路径必须是绝对路径；不要把 `~` 或整个 `/home/alice` 当作方便的兜底授权。示例中的
+`execWithApproval` 会生成：
+
+```ts
+sandboxPolicy: {
+  type: "workspaceWrite",
+  writableRoots,
+  networkAccess: false,
+  excludeTmpdirEnvVar: true,
+  excludeSlashTmp: true,
+}
+```
+
+`workspaceWrite` 仍会允许写 command cwd。Codex 内部的 `AdditionalPermissionProfile` 能够只在
+原 profile 上增加单个 write entry，但 sandbox-server v1 尚未把该增量授权暴露给
+`command/exec`；因此不要为了绕过这个限制直接退化到 `dangerFullAccess`。
 
 批准后的第二次执行是全新的进程。第一次被拒绝的进程不会被恢复。
 

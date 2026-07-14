@@ -25,9 +25,13 @@ export type CommandExecOutcome =
     stderr: string;
   };
 
+export type FileSystemReviewDecision =
+  | { type: "decline" }
+  | { type: "workspaceWrite"; writableRoots: string[] };
+
 export type HumanReview = (
   denied: Extract<CommandExecOutcome, { type: "sandboxDenied" }>,
-) => Promise<boolean>;
+) => Promise<FileSystemReviewDecision>;
 
 export type ServerRequestHandler = (
   method: string,
@@ -246,12 +250,22 @@ export async function execWithApproval(
     "command/exec",
     params,
   );
-  if (first.type === "completed" || !(await review(first))) {
+  if (first.type === "completed") {
+    return first;
+  }
+  const decision = await review(first);
+  if (decision.type === "decline") {
     return first;
   }
   return await client.request<CommandExecOutcome>("command/exec", {
     ...params,
-    sandboxPolicy: { type: "dangerFullAccess" },
+    sandboxPolicy: {
+      type: "workspaceWrite",
+      writableRoots: decision.writableRoots,
+      networkAccess: false,
+      excludeTmpdirEnvVar: true,
+      excludeSlashTmp: true,
+    },
   });
 }
 

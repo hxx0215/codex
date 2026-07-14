@@ -27,55 +27,32 @@ Domain Socket（UDS）提供给其他本地服务。
 - `codex-utils-pty`
 - app-server v2 的 `command/exec` 请求、控制请求和输出通知类型
 
-## 编译
+## 编译与发布
 
-在 `codex-rs` 目录下构建服务和 Linux sandbox helper：
-
-```bash
-cargo build --release \
-  -p codex-sandbox-server \
-  -p codex-linux-sandbox
-```
-
-仓库提供 Nix flake 时，也可以从仓库根目录执行：
+正式发布应从仓库根目录构建 musl static PIE 包：
 
 ```bash
 nix build .#sandbox-server
 ```
 
-构建结果位于 `result/bin/`，同时包含 `codex-sandbox-server` 和
-`codex-linux-sandbox`。在包含尚未加入 Git index 的本地新文件时，可用
-`nix build path:.#sandbox-server` 强制按当前工作目录取源。
-
-如果 flake lock 中的 Rust 版本落后于 `codex-rs/rust-toolchain.toml` 或依赖的最低
-Rust 版本，可以在不修改 lock file 的情况下临时刷新 rust-overlay：
-
-```bash
-nix develop \
-  --override-input rust-overlay github:oxalica/rust-overlay \
-  --command cargo build \
-  --manifest-path codex-rs/Cargo.toml \
-  --release \
-  -p codex-sandbox-server \
-  -p codex-linux-sandbox
-```
-
-构建产物位于：
+Linux 上的 `sandbox-server` 默认指向当前 CPU 架构对应的静态包，也可以显式构建
+`nix build .#sandbox-server-static`。构建结果同时包含：
 
 ```text
-codex-rs/target/release/codex-sandbox-server
-codex-rs/target/release/codex-linux-sandbox
+result/bin/codex-sandbox-server
+result/bin/codex-linux-sandbox
 ```
 
-可以直接组装发布目录：
+两个文件都没有动态加载器、glibc/musl shared library 或 `/nix/store` 运行时依赖。用 `-L`
+解引用 Nix result symlink 后即可复制到其他同 CPU 架构的 Linux 机器：
 
 ```bash
 mkdir -p dist
-install -m 0755 target/release/codex-sandbox-server dist/
-install -m 0755 target/release/codex-linux-sandbox dist/
+cp -L result/bin/codex-sandbox-server dist/
+cp -L result/bin/codex-linux-sandbox dist/
 ```
 
-建议将两个文件放在同一个发布目录中：
+发布目录保持：
 
 ```text
 dist/
@@ -87,12 +64,19 @@ dist/
 `--codex-linux-sandbox-exe` 显式指定 helper。使用 managed sandbox profile 时必须
 保证 helper 可用；`{"type":"disabled"}` 不使用外层 filesystem sandbox。
 
-发布前可以用 `ldd` 检查目标 Linux 环境所需的动态库：
+发布前验证两个 ELF：
 
 ```bash
-ldd target/release/codex-sandbox-server
-ldd target/release/codex-linux-sandbox
+file dist/codex-sandbox-server dist/codex-linux-sandbox
+ldd dist/codex-sandbox-server
+ldd dist/codex-linux-sandbox
 ```
+
+`file` 应显示 `static-pie linked`，`ldd` 应显示 `statically linked`。静态包支持
+`x86_64-linux` 和 `aarch64-linux`，产物不能跨 CPU 架构运行。
+
+日常开发仍可用 Cargo 构建本机动态版本，但不要发布 `target/release` 里的 Nix dev-shell
+产物；它们可能包含写死的 `/nix/store` interpreter/RUNPATH。
 
 ## 启动参数
 
@@ -282,7 +266,8 @@ stdout 专用于 JSONL 协议，服务日志写 stderr；不要把普通日志�
 2. 用户拒绝时结束调用。
 3. 用户批准时重新发送新的 `command/exec` 请求，并设置已有的 `sandboxPolicy` 字段。
 
-例如用户批准完全访问后：
+例如命令只需要写入 `/home/alice/.config/my-app`，应优先批准最窄的
+`workspaceWrite + writableRoots`，而不是 `dangerFullAccess`：
 
 ```json
 {
@@ -290,10 +275,25 @@ stdout 专用于 JSONL 协议，服务日志写 stderr；不要把普通日志�
   "method": "command/exec",
   "params": {
     "command": ["sh", "-lc", "original command"],
-    "sandboxPolicy": { "type": "dangerFullAccess" }
+    "sandboxPolicy": {
+      "type": "workspaceWrite",
+      "writableRoots": ["/home/alice/.config/my-app"],
+      "networkAccess": false,
+      "excludeTmpdirEnvVar": true,
+      "excludeSlashTmp": true
+    }
   }
 }
 ```
+
+`writableRoots` 必须使用绝对路径，不要传 `~`；应批准实际需要的最深目录，而不是整个 home。
+`workspaceWrite` 还会允许写 command cwd。上例通过两个 `exclude*` 字段取消默认的 `$TMPDIR`
+和 `/tmp` 写权限；如果命令确实需要临时目录，可以省略相应字段或设为 `false`。
+
+Codex 内部还有更精细的增量授权 `AdditionalPermissionProfile`，可以在保留原 profile 的基础上，
+只增加一个 `FileSystemAccessMode::Write` path entry。sandbox-server v1 的 `command/exec` 尚未暴露
+这个字段，因此当前对外接口能提供的最小重试策略是 `workspaceWrite + writableRoots`。只有真人
+明确批准不受文件系统限制时，才应使用 `dangerFullAccess`。
 
 该重试是一个新的请求和一次新的命令执行，不是对旧进程的继续运行；它与上面的 managed
 network deferred 审批是两套不同语义。

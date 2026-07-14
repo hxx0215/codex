@@ -59,6 +59,16 @@ Linux-only 约束。
 - `PermissionProfile` JSON shape 和 materialization 规则。
 - `SpawnedProcess`、`ProcessHandle`、resize、close stdin 和 terminate API。
 
+### 静态发布构建
+
+- `flake.nix`
+- `codex-rs/default.nix`
+- `codex-rs/core/Cargo.toml` 中 musl target 的 vendored OpenSSL 配置
+
+重点检查 `nix build .#sandbox-server` 在 Linux 上仍生成当前架构的 musl static PIE，并且
+同时安装 server 与 helper。不要退回直接发布由 Nix dev shell 生成的 `target/release` 动态
+ELF。
+
 ### transport 行为
 
 - `codex-rs/app-server-transport/src/transport/stdio.rs`
@@ -128,6 +138,7 @@ git diff "$BASE..$TARGET" -- \
 - allowlist host 不触发审批；allowlist miss 挂起并在批准后继续同一网络请求。
 - denylist/private/local destination 不会被 deferred 审批放宽。
 - `acceptForSession` cache 不跨连接，断连和 terminate 会取消 pending approval。
+- 两个发布 ELF 的 `file` 结果都是 `static-pie linked`，`ldd` 都是 `statically linked`。
 - 父进程 stdin EOF 会关闭 UDS、终止全部进程并删除本进程创建的 socket inode。
 - 已存在的 UDS path 不会被删除或替换。
 
