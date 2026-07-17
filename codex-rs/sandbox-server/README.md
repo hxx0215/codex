@@ -79,6 +79,35 @@ ldd dist/codex-linux-sandbox
 日常开发仍可用 Cargo 构建本机动态版本，但不要发布 `target/release` 里的 Nix dev-shell
 产物；它们可能包含写死的 `/nix/store` interpreter/RUNPATH。
 
+### GitHub Release workflow
+
+仓库提供 `.github/workflows/sandbox-server-release.yml`。该 workflow 通过 GitHub Actions 页面
+手动运行，输入不带 `v` 的 `X.Y.Z` 版本号，例如 `0.1.0`。运行时应选择准备发布的 source ref。
+
+workflow 会：
+
+1. 确认 `sandbox-server-vX.Y.Z` tag 和 release 尚不存在。
+2. 只在 CI checkout 中把 workspace placeholder version 临时替换成输入版本。
+3. 在原生 x86_64 和 aarch64 Linux runner 上执行 Nix musl static build。
+4. strip 并验证两个 ELF，随后把 sibling binaries、`LICENSE`、`NOTICE`、`VERSION` 和
+   `SOURCE_COMMIT` 打进架构独立的 `tar.gz`。
+5. 生成每个 archive 的 `.sha256`、合并的 `SHA256SUMS` 和机器可读的 `manifest.json`。
+6. 在当前 GitHub repository 创建 `sandbox-server-vX.Y.Z` tag 和不可覆盖的 Release。
+
+Release asset 名称如下：
+
+```text
+codex-sandbox-server-0.1.0-x86_64-unknown-linux-musl.tar.gz
+codex-sandbox-server-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
+codex-sandbox-server-0.1.0-aarch64-unknown-linux-musl.tar.gz
+codex-sandbox-server-0.1.0-aarch64-unknown-linux-musl.tar.gz.sha256
+SHA256SUMS
+manifest.json
+```
+
+同一版本不会被重新发布或覆盖。内容有变化时必须递增版本号，以保证已被其他项目 pin 的 URL 和
+SHA-256 始终表示相同字节。
+
 ## 启动参数
 
 ```text
