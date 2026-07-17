@@ -25,13 +25,22 @@ export type CommandExecOutcome =
     stderr: string;
   };
 
-export type FileSystemReviewDecision =
-  | { type: "decline" }
-  | { type: "workspaceWrite"; writableRoots: string[] };
-
-export type HumanReview = (
-  denied: Extract<CommandExecOutcome, { type: "sandboxDenied" }>,
-) => Promise<FileSystemReviewDecision>;
+export type AdditionalPermissionProfile = {
+  network?: { enabled?: boolean | null } | null;
+  fileSystem?: {
+    read?: string[] | null;
+    write?: string[] | null;
+    entries?:
+      | Array<{
+        path:
+          | { type: "path"; path: string }
+          | { type: "glob_pattern"; pattern: string }
+          | { type: "special"; value: JsonObject };
+        access: "read" | "write" | "deny";
+      }>
+      | null;
+  } | null;
+};
 
 export type ServerRequestHandler = (
   method: string,
@@ -244,28 +253,11 @@ export class SandboxServerClient {
 export async function execWithApproval(
   client: SandboxServerClient,
   params: JsonObject,
-  review: HumanReview,
+  additionalPermissions: AdditionalPermissionProfile,
 ): Promise<CommandExecOutcome> {
-  const first = await client.request<CommandExecOutcome>(
-    "command/exec",
-    params,
-  );
-  if (first.type === "completed") {
-    return first;
-  }
-  const decision = await review(first);
-  if (decision.type === "decline") {
-    return first;
-  }
   return await client.request<CommandExecOutcome>("command/exec", {
     ...params,
-    sandboxPolicy: {
-      type: "workspaceWrite",
-      writableRoots: decision.writableRoots,
-      networkAccess: false,
-      excludeTmpdirEnvVar: true,
-      excludeSlashTmp: true,
-    },
+    additionalPermissions,
   });
 }
 
@@ -292,6 +284,9 @@ if (import.meta.main) {
   const binary = Deno.env.get("CODEX_SANDBOX_SERVER") ??
     "./dist/codex-sandbox-server";
   const linuxSandboxExe = Deno.env.get("CODEX_LINUX_SANDBOX") ?? undefined;
+  const stateDirectory = `${Deno.cwd()}/.sandbox-server-example-state`;
+  const statePath = `${stateDirectory}/state.txt`;
+  await Deno.mkdir(stateDirectory, { recursive: true });
   const client = await SandboxServerClient.start({
     binary,
     cwd: Deno.cwd(),
@@ -307,12 +302,20 @@ if (import.meta.main) {
       allow_local_binding: false,
     },
     onRequest: async (method, params) => {
-      if (method !== "command/exec/requestNetworkApproval") {
-        throw new Error(`unsupported sandbox server request: ${method}`);
+      if (method === "command/exec/requestPermissionsApproval") {
+        console.error(
+          "model proposed additional permissions; human review required",
+          params,
+        );
+        // The model/business layer proposes paths. A human only approves or declines.
+        const approved = true; // Replace with the parent service's real review UI.
+        return { decision: approved ? "accept" : "decline" };
       }
-      console.error("network access requires human review", params);
-      // Replace this example decision with the parent service's real human-review UI.
-      return { decision: "acceptForSession" };
+      if (method === "command/exec/requestNetworkApproval") {
+        console.error("network access requires human review", params);
+        return { decision: "acceptForSession" };
+      }
+      throw new Error(`unsupported sandbox server request: ${method}`);
     },
     onNotification: (method, params) => {
       console.error("sandbox notification", method, params);
@@ -320,9 +323,27 @@ if (import.meta.main) {
   });
 
   try {
-    const result = await client.request<CommandExecOutcome>("command/exec", {
-      command: ["sh", "-lc", "printf 'hello from sandbox\\n'"],
-    });
+    const result = await execWithApproval(
+      client,
+      {
+        command: [
+          "sh",
+          "-c",
+          'printf \'hello from sandbox\\n\' > "$1"; cat "$1"',
+          "sh",
+          statePath,
+        ],
+        processId: "write-example-state",
+      },
+      {
+        fileSystem: {
+          entries: [{
+            path: { type: "path", path: stateDirectory },
+            access: "write",
+          }],
+        },
+      },
+    );
     console.log(result);
   } finally {
     const status = await client.close();

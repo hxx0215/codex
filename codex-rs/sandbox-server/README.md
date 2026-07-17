@@ -4,9 +4,10 @@
 现有的命令沙盒、PTY 和 `command/exec` 控制语义，通过 stdio 和可选的 Unix
 Domain Socket（UDS）提供给其他本地服务。
 
-它不包含 TUI、会话、模型调用或用户审批界面。调用方负责展示审批请求。文件系统 sandbox
-拒绝仍由调用方决定是否以新请求重试；managed network 的 allowlist miss 会挂起原网络请求，
-调用方批准后同一条连接继续执行，不会重跑命令。
+它不包含 TUI、会话、模型调用或用户审批界面。调用方负责让模型/业务层声明最小权限，并把
+服务发出的审批请求展示给真人。非空 `additionalPermissions` 会在进程创建前挂起；只有真人
+返回单次 `accept` 后才会按原 profile 加增量 overlay 并执行一次。managed network 的 allowlist
+miss 也会挂起原网络请求，批准后继续同一条连接，不会重跑命令。
 
 ## 运行模型
 
@@ -17,8 +18,8 @@ Domain Socket（UDS）提供给其他本地服务。
 - 每个连接必须先调用 `initialize`。
 - `processId` 和运行中的命令都属于创建它们的连接；连接断开时对应命令会被终止。
 - 服务退出前会等待运行中的命令完成终止和回收。
-- 网络审批和 `acceptForSession` 缓存按连接隔离；连接断开、命令终止或父 stdin EOF 会取消
-  对应的待审批请求。
+- 网络审批和 `acceptForSession` 缓存按连接隔离；额外文件系统权限不缓存。连接断开、命令
+  terminate 或父 stdin EOF 会取消对应的待审批请求。
 
 服务复用以下上游实现：
 
@@ -133,6 +134,8 @@ codex-sandbox-server \
 
 ## 协议
 
+完整 wire protocol、字段约束、并发状态机和时序示例见 [PROTOCOL.md](PROTOCOL.md)。
+
 协议沿用 app-server 的无 `jsonrpc: "2.0"` JSON-RPC envelope。每个连接首先发送：
 
 ```json
@@ -199,6 +202,7 @@ codex-sandbox-server \
 - `command/exec/terminate`
 - `command/exec/outputDelta`
 - `command/exec/requestNetworkApproval`（server → client request）
+- `command/exec/requestPermissionsApproval`（server → client request）
 
 流式执行、PTY、timeout、output cap 和参数字段以
 [`app-server-protocol/src/protocol/v2/command_exec.rs`](../app-server-protocol/src/protocol/v2/command_exec.rs)
@@ -258,16 +262,13 @@ destination 仍由上游代理策略硬拒绝；allowlist miss 会向发起 `com
 stdout 专用于 JSONL 协议，服务日志写 stderr；不要把普通日志写入 stdout。若父服务需要独立日志
 通道，可以单独 pipe stderr、交给进程管理器，或重定向到文件，不需要占用 fd 3。
 
-### 文件系统拒绝后的审批重试
+### AdditionalPermissionProfile 与启动前审批
 
-服务不保存审批状态。客户端收到 `sandboxDenied` 后应：
+Linux sandbox 后端无法可靠返回被拒绝的精确路径；`sandboxDenied.stderr` 只用于诊断，服务绝不
+从 stderr 猜测或扩大权限。最小权限必须由模型/业务层在第一次请求中预先声明，或者在首次
+失败后由模型明确构造第二个请求。真人只负责 approve/decline，不负责替模型选择路径。
 
-1. 把命令、工作目录、拒绝输出和拟放宽的权限展示给真人。
-2. 用户拒绝时结束调用。
-3. 用户批准时重新发送新的 `command/exec` 请求，并设置已有的 `sandboxPolicy` 字段。
-
-例如命令只需要写入 `/home/alice/.config/my-app`，应优先批准最窄的
-`workspaceWrite + writableRoots`，而不是 `dangerFullAccess`：
+例如命令要新建 `state.json`，应增加对其已存在父目录的写权限：
 
 ```json
 {
@@ -275,28 +276,60 @@ stdout 专用于 JSONL 协议，服务日志写 stderr；不要把普通日志�
   "method": "command/exec",
   "params": {
     "command": ["sh", "-lc", "original command"],
-    "sandboxPolicy": {
-      "type": "workspaceWrite",
-      "writableRoots": ["/home/alice/.config/my-app"],
-      "networkAccess": false,
-      "excludeTmpdirEnvVar": true,
-      "excludeSlashTmp": true
+    "processId": "update-state",
+    "additionalPermissions": {
+      "network": null,
+      "fileSystem": {
+        "read": null,
+        "write": null,
+        "entries": [{
+          "path": {
+            "type": "path",
+            "path": "/home/alice/.config/my-app"
+          },
+          "access": "write"
+        }]
+      }
     }
   }
 }
 ```
 
-`writableRoots` 必须使用绝对路径，不要传 `~`；应批准实际需要的最深目录，而不是整个 home。
-`workspaceWrite` 还会允许写 command cwd。上例通过两个 `exclude*` 字段取消默认的 `$TMPDIR`
-和 `/tmp` 写权限；如果命令确实需要临时目录，可以省略相应字段或设为 `false`。
+服务随后在同一连接发送：
 
-Codex 内部还有更精细的增量授权 `AdditionalPermissionProfile`，可以在保留原 profile 的基础上，
-只增加一个 `FileSystemAccessMode::Write` path entry。sandbox-server v1 的 `command/exec` 尚未暴露
-这个字段，因此当前对外接口能提供的最小重试策略是 `workspaceWrite + writableRoots`。只有真人
-明确批准不受文件系统限制时，才应使用 `dangerFullAccess`。
+```json
+{
+  "id": "permissions-approval:1",
+  "method": "command/exec/requestPermissionsApproval",
+  "params": {
+    "processId": "update-state",
+    "command": ["sh", "-lc", "original command"],
+    "cwd": "/workspace",
+    "additionalPermissions": {
+      "network": null,
+      "fileSystem": {
+        "read": null,
+        "write": null,
+        "entries": [{
+          "path": { "type": "path", "path": "/home/alice/.config/my-app" },
+          "access": "write"
+        }]
+      }
+    }
+  }
+}
+```
 
-该重试是一个新的请求和一次新的命令执行，不是对旧进程的继续运行；它与上面的 managed
-network deferred 审批是两套不同语义。
+客户端返回 `{ "decision": "accept" }` 才会启动进程。`decline`、`cancel`、error response、断连
+以及 `acceptForSession`/policy amendment 都拒绝启动；额外权限没有安全的 session cache 语义，
+因此 fail closed。批准后的 overlay 复用 `codex-sandboxing` 的 effective policy 合并，原 profile
+中的 deny/read restrictions 会保留。命令只执行一次。
+
+路径应使用绝对路径，不要传 `~`。Linux bubblewrap 后端把 write path 当作可写目录根，并在其下
+合成受保护挂载，因此 write entry 应选择已存在的最深父目录；不要把普通文件路径直接作为
+write root。兼容的 `sandboxPolicy`
+字段仍保留，但新接入应优先使用 `additionalPermissions`，不要把 `workspaceWrite` 或
+`dangerFullAccess` 当默认审批方案。
 
 ## 验证
 
@@ -313,4 +346,4 @@ just bazel-lock-update
 ```
 
 上游同步流程见 [UPSTREAM_SYNC.md](UPSTREAM_SYNC.md)，Deno 父服务示例见
-[DENO_INTEGRATION.md](DENO_INTEGRATION.md)。
+[DENO_INTEGRATION.md](DENO_INTEGRATION.md)，完整通信协议见 [PROTOCOL.md](PROTOCOL.md)。

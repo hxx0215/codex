@@ -7,8 +7,10 @@
 3. 保持 stdin 打开，并使用 JSONL 发送并发 JSON-RPC 请求。
 4. 在后台持续读取 stdout，将 response 按 id 分发给对应 Promise。
 5. 接收 `command/exec/outputDelta` notification。
-6. 处理 `command/exec/requestNetworkApproval` server request，并把真人审核结果写回相同 id。
-7. 在关闭时主动关闭 stdin，并等待 sandbox server 完整退出。
+6. 处理 `command/exec/requestPermissionsApproval` 和 managed network server request，并把真人
+   审核结果写回相同 id。
+7. 用模型/业务层预先声明的 `AdditionalPermissionProfile` 请求最小文件系统权限。
+8. 在关闭时主动关闭 stdin，并等待 sandbox server 完整退出。
 
 ## 准备发布目录
 
@@ -30,7 +32,9 @@ dist/
 
 ```bash
 CODEX_SANDBOX_SERVER=../../result/bin/codex-sandbox-server \
-deno run --allow-run --allow-env examples/deno_parent.ts
+deno run --allow-run --allow-env \
+  --allow-write=.sandbox-server-example-state \
+  examples/deno_parent.ts
 ```
 
 如果 helper 不在 server 同目录，可以额外设置：
@@ -38,7 +42,9 @@ deno run --allow-run --allow-env examples/deno_parent.ts
 ```bash
 CODEX_SANDBOX_SERVER=/opt/codex/bin/codex-sandbox-server \
 CODEX_LINUX_SANDBOX=/opt/codex/bin/codex-linux-sandbox \
-deno run --allow-run --allow-env examples/deno_parent.ts
+deno run --allow-run --allow-env \
+  --allow-write=.sandbox-server-example-state \
+  examples/deno_parent.ts
 ```
 
 生产服务通常已经拥有自己的配置和日志系统，可以把示例中的环境变量替换为配置字段。
@@ -116,18 +122,15 @@ allowlist miss 期间原网络连接保持等待。`accept` 只放行一次，`a
 或 UDS 连接内缓存；断连后 cache 清空。Deno 服务若要持久化规则，应在自己的配置层保存，并在
 下次启动时重新生成 `networkProxyConfig`。
 
-## 文件系统拒绝后的审批重试
+## Additional permissions 审批
 
-示例导出了 `execWithApproval`。流程是：
+Linux sandbox denial 不能可靠提供被拒绝的路径，因此父服务不能从 stderr 猜路径。模型或业务
+逻辑必须预先提出最小 `AdditionalPermissionProfile`；也可以在首次 `sandboxDenied` 后由模型明确
+生成第二个请求，但第二次请求必须显式携带权限。真人只 approve/decline 已提出的 profile。
 
-1. 先按默认 profile 调用 `command/exec`。
-2. 如果返回 `completed`，直接结束。
-3. 如果返回 `sandboxDenied`，调用 Deno 服务自己的真人审核回调。
-4. 回调批准后返回 `workspaceWrite` decision 和最窄的绝对 `writableRoots`。
-5. `execWithApproval` 以新的 request id 重试命令，并关闭默认 `/tmp`、`$TMPDIR` 写权限。
-
-示例中的审批回调只是接口。生产服务应把命令、cwd、拒绝信息和权限差异发送到自己的管理
-界面，不要在 sandbox server 内增加审批状态。
+示例导出的 `execWithApproval` 会直接发送一次带 `additionalPermissions` 的命令。server 在 spawn
+前发出 `command/exec/requestPermissionsApproval`，只有单次 `accept` 后才把 overlay 合并到默认
+profile 并执行一次；它不会先执行失败再自动重跑。
 
 ```ts
 const result = await execWithApproval(
@@ -138,42 +141,37 @@ const result = await execWithApproval(
       "-lc",
       "printf updated > /home/alice/.config/my-app/state.txt",
     ],
+    processId: "update-state",
   },
-  async (denied) => {
-    const writableRoot = "/home/alice/.config/my-app";
-    const approved = await reviewService.requestHumanApproval({
-      command: "update my-app state",
-      stderr: denied.stderr,
-      requestedPolicy: {
-        type: "workspaceWrite",
-        writableRoots: [writableRoot],
-      },
-    });
-    return approved
-      ? { type: "workspaceWrite", writableRoots: [writableRoot] }
-      : { type: "decline" };
+  {
+    fileSystem: {
+      entries: [{
+        path: {
+          type: "path",
+          path: "/home/alice/.config/my-app",
+        },
+        access: "write",
+      }],
+    },
   },
 );
 ```
 
-路径必须是绝对路径；不要把 `~` 或整个 `/home/alice` 当作方便的兜底授权。示例中的
-`execWithApproval` 会生成：
+父服务的 request handler 只决定是否批准：
 
 ```ts
-sandboxPolicy: {
-  type: "workspaceWrite",
-  writableRoots,
-  networkAccess: false,
-  excludeTmpdirEnvVar: true,
-  excludeSlashTmp: true,
+if (method === "command/exec/requestPermissionsApproval") {
+  const approved = await reviewService.requestHumanApproval(params);
+  return { decision: approved ? "accept" : "decline" };
 }
 ```
 
-`workspaceWrite` 仍会允许写 command cwd。Codex 内部的 `AdditionalPermissionProfile` 能够只在
-原 profile 上增加单个 write entry，但 sandbox-server v1 尚未把该增量授权暴露给
-`command/exec`；因此不要为了绕过这个限制直接退化到 `dangerFullAccess`。
-
-批准后的第二次执行是全新的进程。第一次被拒绝的进程不会被恢复。
+路径必须是绝对路径；不要把 `~` 或整个 `/home/alice` 当作方便的兜底授权。Linux write entry
+应指向已存在的最深父目录，因为 bubblewrap 会把它作为可写目录根；不要直接传普通文件路径。
+只有 `accept` 有效；
+`acceptForSession`、policy amendment、decline、cancel、error 和断连都 fail closed。兼容的
+`sandboxPolicy.workspaceWrite` 字段仍可用，但不应作为新接入的默认最小授权，更不应退化到
+`dangerFullAccess`。
 
 ## 使用 UDS
 

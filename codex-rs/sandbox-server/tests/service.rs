@@ -47,8 +47,23 @@ impl SandboxServerProcess {
         uds: Option<&Path>,
         capture_stdout: bool,
     ) -> Result<Self> {
+        Self::spawn_with_permission_profile(
+            working_dir,
+            codex_home,
+            uds,
+            capture_stdout,
+            PermissionProfile::Disabled,
+        )
+    }
+
+    fn spawn_with_permission_profile(
+        working_dir: &Path,
+        codex_home: &Path,
+        uds: Option<&Path>,
+        capture_stdout: bool,
+        permission_profile: PermissionProfile,
+    ) -> Result<Self> {
         fs::create_dir_all(codex_home)?;
-        let permission_profile: PermissionProfile = PermissionProfile::Disabled;
         let permission_profile_json = serde_json::to_string(&permission_profile)?;
         let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("codex-sandbox-server")?);
         command
@@ -139,6 +154,199 @@ impl SandboxServerProcess {
             sleep(Duration::from_millis(10)).await;
         }
     }
+}
+
+#[test]
+fn additional_permissions_require_accept_before_spawn() -> Result<()> {
+    let temp = TempDir::new()?;
+    let codex_home = temp.path().join("codex-home");
+    let marker = temp.path().join("declined-marker");
+    let mut server = SandboxServerProcess::spawn_with_permission_profile(
+        temp.path(),
+        &codex_home,
+        None,
+        true,
+        PermissionProfile::read_only(),
+    )?;
+    server.send_stdio(&initialize_request(1))?;
+    let _ = server.recv_stdio()?;
+
+    server.send_stdio(&command_with_additional_write(2, "declined", &marker))?;
+    let approval = server.recv_stdio()?;
+    assert_eq!(
+        approval["method"],
+        json!("command/exec/requestPermissionsApproval")
+    );
+    assert_eq!(approval["params"]["processId"], json!("declined"));
+    assert!(!marker.exists());
+
+    server.send_stdio(&json!({
+        "id": approval["id"],
+        "result": {"decision": "decline"}
+    }))?;
+    assert_eq!(
+        server.recv_stdio()?,
+        json!({
+            "id": 2,
+            "error": {
+                "code": -32600,
+                "message": "additional permissions were not approved"
+            }
+        })
+    );
+    assert!(!marker.exists());
+
+    server.close_stdin();
+    assert!(server.wait()?.success());
+    Ok(())
+}
+
+#[test]
+fn accepted_additional_permissions_execute_once() -> Result<()> {
+    let temp = TempDir::new()?;
+    let codex_home = temp.path().join("codex-home");
+    let writable_root = temp.path().join("approved-output");
+    fs::create_dir(&writable_root)?;
+    let marker = writable_root.join("accepted-marker");
+    let mut server = SandboxServerProcess::spawn_with_permission_profile(
+        temp.path(),
+        &codex_home,
+        None,
+        true,
+        PermissionProfile::read_only(),
+    )?;
+    server.send_stdio(&initialize_request(1))?;
+    let _ = server.recv_stdio()?;
+
+    server.send_stdio(&command_with_additional_write(2, "accepted", &marker))?;
+    let approval = server.recv_stdio()?;
+    assert!(!marker.exists());
+    server.send_stdio(&json!({
+        "id": approval["id"],
+        "result": {"decision": "accept"}
+    }))?;
+    assert_eq!(
+        server.recv_stdio()?,
+        json!({
+            "id": 2,
+            "result": {
+                "type": "completed",
+                "exitCode": 0,
+                "stdout": "approved",
+                "stderr": ""
+            }
+        })
+    );
+    assert_eq!(fs::read_to_string(&marker)?, "approved");
+
+    server.close_stdin();
+    assert!(server.wait()?.success());
+    Ok(())
+}
+
+#[test]
+fn stdin_disconnect_cancels_pending_permissions_without_spawning() -> Result<()> {
+    let temp = TempDir::new()?;
+    let codex_home = temp.path().join("codex-home");
+    let marker = temp.path().join("disconnect-marker");
+    let mut server = SandboxServerProcess::spawn(temp.path(), &codex_home, None, true)?;
+    server.send_stdio(&initialize_request(1))?;
+    let _ = server.recv_stdio()?;
+    server.send_stdio(&command_with_additional_write(2, "disconnect", &marker))?;
+    let approval = server.recv_stdio()?;
+    assert_eq!(
+        approval["method"],
+        json!("command/exec/requestPermissionsApproval")
+    );
+
+    server.close_stdin();
+    assert!(server.wait()?.success());
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[test]
+fn terminate_cancels_pending_permissions_before_spawn() -> Result<()> {
+    let temp = TempDir::new()?;
+    let codex_home = temp.path().join("codex-home");
+    let marker = temp.path().join("terminate-marker");
+    let mut server = SandboxServerProcess::spawn(temp.path(), &codex_home, None, true)?;
+    server.send_stdio(&initialize_request(1))?;
+    let _ = server.recv_stdio()?;
+    server.send_stdio(&command_with_additional_write(2, "terminate", &marker))?;
+    let _approval = server.recv_stdio()?;
+
+    server.send_stdio(&json!({
+        "id": 3,
+        "method": "command/exec/terminate",
+        "params": {"processId": "terminate"}
+    }))?;
+    let first = server.recv_stdio()?;
+    let second = server.recv_stdio()?;
+    let mut responses = vec![first, second];
+    responses.sort_by_key(|response| response["id"].as_i64());
+    assert_eq!(
+        responses,
+        vec![
+            json!({
+                "id": 2,
+                "error": {
+                    "code": -32600,
+                    "message": "permissions approval cancelled"
+                }
+            }),
+            json!({"id": 3, "result": {}}),
+        ]
+    );
+    assert!(!marker.exists());
+
+    server.close_stdin();
+    assert!(server.wait()?.success());
+    Ok(())
+}
+
+#[test]
+fn duplicate_pending_process_id_does_not_replace_first_approval() -> Result<()> {
+    let temp = TempDir::new()?;
+    let codex_home = temp.path().join("codex-home");
+    let first_marker = temp.path().join("first-marker");
+    let second_marker = temp.path().join("second-marker");
+    let mut server = SandboxServerProcess::spawn(temp.path(), &codex_home, None, true)?;
+    server.send_stdio(&initialize_request(1))?;
+    let _ = server.recv_stdio()?;
+    server.send_stdio(&command_with_additional_write(
+        2,
+        "duplicate",
+        &first_marker,
+    ))?;
+    let approval = server.recv_stdio()?;
+
+    server.send_stdio(&command_with_additional_write(
+        3,
+        "duplicate",
+        &second_marker,
+    ))?;
+    assert_eq!(
+        server.recv_stdio()?,
+        json!({
+            "id": 3,
+            "error": {
+                "code": -32600,
+                "message": "duplicate pending command/exec process id: \"duplicate\""
+            }
+        })
+    );
+    server.send_stdio(&json!({
+        "id": approval["id"],
+        "result": {"decision": "decline"}
+    }))?;
+    assert_eq!(server.recv_stdio()?["id"], json!(2));
+    assert!(!first_marker.exists());
+    assert!(!second_marker.exists());
+
+    server.close_stdin();
+    assert!(server.wait()?.success());
+    Ok(())
 }
 
 impl Drop for SandboxServerProcess {
@@ -313,6 +521,31 @@ fn initialize_request(id: i64) -> Value {
                 "version": "0.0.0"
             },
             "capabilities": null
+        }
+    })
+}
+
+fn command_with_additional_write(id: i64, process_id: &str, marker: &Path) -> Value {
+    let writable_root = marker.parent().unwrap_or(marker);
+    json!({
+        "id": id,
+        "method": "command/exec",
+        "params": {
+            "command": [
+                "sh",
+                "-c",
+                "printf approved > \"$1\"; printf approved",
+                "sh",
+                marker
+            ],
+            "processId": process_id,
+            "additionalPermissions": {
+                "network": null,
+                "fileSystem": {
+                    "read": null,
+                    "write": [writable_root]
+                }
+            }
         }
     })
 }

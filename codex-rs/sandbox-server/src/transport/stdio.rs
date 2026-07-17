@@ -16,6 +16,7 @@ use crate::server::Server;
 
 pub(crate) async fn run_stdio(server: Arc<Server>, shutdown: CancellationToken) -> io::Result<()> {
     let connection_id = ConnectionId(0);
+    let connection_cancellation = CancellationToken::new();
     let (writer_tx, mut writer_rx) = mpsc::channel::<JSONRPCMessage>(CHANNEL_CAPACITY);
     let writer = ConnectionWriter::new(writer_tx);
     let writer_shutdown = shutdown.child_token();
@@ -54,9 +55,18 @@ pub(crate) async fn run_stdio(server: Arc<Server>, shutdown: CancellationToken) 
         let Some(line) = line else {
             break;
         };
-        handle_incoming_json(&server, connection_id, &writer, &mut initialized, &line).await;
+        handle_incoming_json(
+            &server,
+            connection_id,
+            &writer,
+            &connection_cancellation,
+            &mut initialized,
+            &line,
+        )
+        .await;
     }
 
+    connection_cancellation.cancel();
     server.connection_closed(connection_id).await;
     shutdown.cancel();
     writer_handle.abort();

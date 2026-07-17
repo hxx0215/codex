@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use codex_app_server_protocol::JSONRPCMessage;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::server::Server;
 
@@ -42,13 +43,20 @@ async fn handle_incoming_json(
     server: &Arc<Server>,
     connection_id: ConnectionId,
     writer: &ConnectionWriter,
+    connection_cancellation: &CancellationToken,
     initialized: &mut bool,
     payload: &str,
 ) {
     match serde_json::from_str::<JSONRPCMessage>(payload) {
         Ok(message) => {
             server
-                .handle_message(connection_id, writer, initialized, message)
+                .handle_message(
+                    connection_id,
+                    writer,
+                    connection_cancellation,
+                    initialized,
+                    message,
+                )
                 .await;
         }
         Err(err) => tracing::warn!(%connection_id, "invalid JSON-RPC message: {err}"),

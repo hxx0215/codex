@@ -132,6 +132,7 @@ async fn run_connection(
     });
 
     let mut initialized = false;
+    let connection_cancellation = CancellationToken::new();
     loop {
         let message = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -146,6 +147,7 @@ async fn run_connection(
                     &server,
                     connection_id,
                     &writer,
+                    &connection_cancellation,
                     &mut initialized,
                     text.as_ref(),
                 )
@@ -153,8 +155,15 @@ async fn run_connection(
             }
             Ok(Message::Binary(bytes)) => match std::str::from_utf8(&bytes) {
                 Ok(text) => {
-                    handle_incoming_json(&server, connection_id, &writer, &mut initialized, text)
-                        .await;
+                    handle_incoming_json(
+                        &server,
+                        connection_id,
+                        &writer,
+                        &connection_cancellation,
+                        &mut initialized,
+                        text,
+                    )
+                    .await;
                 }
                 Err(err) => tracing::warn!(%connection_id, "invalid UTF-8 WebSocket frame: {err}"),
             },
@@ -167,6 +176,7 @@ async fn run_connection(
         }
     }
 
+    connection_cancellation.cancel();
     server.connection_closed(connection_id).await;
     shutdown.cancel();
     writer_handle.abort();

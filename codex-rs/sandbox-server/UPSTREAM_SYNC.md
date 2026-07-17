@@ -18,6 +18,9 @@ Linux-only 约束。
 重点检查：
 
 - `CommandExecParams` 是否新增、删除或重命名字段。
+- 本 crate 的 serde flatten wrapper 是否仍能在不修改公共 `CommandExecParams` 的前提下解析
+  camelCase `additionalPermissions`。
+- app-server v2 `AdditionalPermissionProfile` 与审批 decision/response 的 wire shape 是否变化。
 - write、resize、terminate 的参数和响应是否变化。
 - `command/exec/outputDelta` 的字段、base64 语义和发送顺序是否变化。
 - serde 的 camelCase、tagged union 或 optional/default 规则是否变化。
@@ -57,6 +60,8 @@ Linux-only 约束。
 - `codex-linux-sandbox` helper 的参数和发现方式。
 - `is_likely_sandbox_denied` 的输入和判定变化。
 - `PermissionProfile` JSON shape 和 materialization 规则。
+- `normalize_additional_permissions`、`effective_permission_profile` 以及 deny/read restriction 的
+  merge 语义；本服务不得复制一份自己的合并实现。
 - `SpawnedProcess`、`ProcessHandle`、resize、close stdin 和 terminate API。
 
 ### 静态发布构建
@@ -121,9 +126,12 @@ git diff "$BASE..$TARGET" -- \
 2. 对照 app-server 更新参数校验和进程生命周期语义。
 3. 对照 sandboxing 更新拒绝分类；保持本服务的 tagged outcome：
    `completed | sandboxDenied`。
-4. 对照 transport 更新 framing 和 notification 顺序；保留 UDS 的同 UID 限制。
-5. 更新或增加集成测试，不只做编译修复。
-6. 在同步提交或 PR 描述中记录新的上游 commit SHA，作为下一次 `BASE`。
+4. 检查启动前 additional permissions 审批仍只接受单次 `accept`，并在批准后通过上游 effective
+   policy overlay 执行一次。sandbox denial 后端不能可靠返回 denied path，服务不得从 stderr
+   推断授权。
+5. 对照 transport 更新 framing 和 notification 顺序；保留 UDS 的同 UID 限制。
+6. 更新或增加集成测试，不只做编译修复。
+7. 在同步提交或 PR 描述中记录新的上游 commit SHA，作为下一次 `BASE`。
 
 ## 必须重新验证的行为
 
@@ -138,6 +146,11 @@ git diff "$BASE..$TARGET" -- \
 - allowlist host 不触发审批；allowlist miss 挂起并在批准后继续同一网络请求。
 - denylist/private/local destination 不会被 deferred 审批放宽。
 - `acceptForSession` cache 不跨连接，断连和 terminate 会取消 pending approval。
+- 非空 `additionalPermissions` 在 spawn 前发送
+  `command/exec/requestPermissionsApproval`；Accept 才执行，Decline/Cancel/error/
+  AcceptForSession/断连都不执行。
+- additional permissions 使用上游 effective profile merge，保留已有 deny/read restrictions；
+  不带该字段的 command 行为不变。
 - 两个发布 ELF 的 `file` 结果都是 `static-pie linked`，`ldd` 都是 `statically linked`。
 - 父进程 stdin EOF 会关闭 UDS、终止全部进程并删除本进程创建的 socket inode。
 - 已存在的 UDS path 不会被删除或替换。

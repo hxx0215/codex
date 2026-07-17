@@ -68,6 +68,7 @@ impl Default for ProcessManager {
 
 pub(crate) struct StartProcessParams {
     pub(crate) connection_id: ConnectionId,
+    pub(crate) connection_cancellation: CancellationToken,
     pub(crate) writer: ConnectionWriter,
     pub(crate) request_id: RequestId,
     pub(crate) process_id: Option<String>,
@@ -153,6 +154,7 @@ impl ProcessManager {
     pub(crate) async fn start(&self, params: StartProcessParams) -> Result<(), JSONRPCErrorError> {
         let StartProcessParams {
             connection_id,
+            connection_cancellation,
             writer,
             request_id,
             process_id,
@@ -208,6 +210,12 @@ impl ProcessManager {
         let (completed_tx, completed_rx) = watch::channel(false);
         {
             let mut sessions = self.sessions.lock().await;
+            if connection_cancellation.is_cancelled() {
+                execution_cancellation.cancel();
+                return Err(invalid_request(
+                    "command/exec connection closed before the process could start",
+                ));
+            }
             if sessions.contains_key(&process_key) {
                 return Err(invalid_request(format!(
                     "duplicate active command/exec process id: {}",

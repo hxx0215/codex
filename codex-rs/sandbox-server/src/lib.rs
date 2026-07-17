@@ -3,6 +3,8 @@
 #[cfg(target_os = "linux")]
 mod network;
 #[cfg(target_os = "linux")]
+mod permissions;
+#[cfg(target_os = "linux")]
 mod process;
 mod protocol;
 #[cfg(target_os = "linux")]

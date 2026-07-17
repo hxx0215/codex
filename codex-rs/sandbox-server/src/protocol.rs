@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use codex_app_server_protocol::AdditionalPermissionProfile;
+use codex_app_server_protocol::CommandExecParams;
 use codex_app_server_protocol::JSONRPCErrorError;
 
 pub(crate) const INITIALIZE_METHOD: &str = "initialize";
@@ -11,6 +13,16 @@ pub(crate) const COMMAND_EXEC_TERMINATE_METHOD: &str = "command/exec/terminate";
 pub(crate) const COMMAND_EXEC_OUTPUT_DELTA_METHOD: &str = "command/exec/outputDelta";
 pub(crate) const COMMAND_EXEC_REQUEST_NETWORK_APPROVAL_METHOD: &str =
     "command/exec/requestNetworkApproval";
+pub(crate) const COMMAND_EXEC_REQUEST_PERMISSIONS_APPROVAL_METHOD: &str =
+    "command/exec/requestPermissionsApproval";
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SandboxCommandExecParams {
+    #[serde(flatten)]
+    pub(crate) command_exec: CommandExecParams,
+    pub(crate) additional_permissions: Option<AdditionalPermissionProfile>,
+}
 
 pub(crate) fn invalid_request(message: impl Into<String>) -> JSONRPCErrorError {
     rpc_error(-32600, message)

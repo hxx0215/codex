@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-use codex_app_server_protocol::CommandExecParams;
 use codex_app_server_protocol::CommandExecResizeParams;
 use codex_app_server_protocol::CommandExecTerminateParams;
+use codex_app_server_protocol::CommandExecTerminateResponse;
 use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
@@ -37,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 use crate::Args;
 use crate::network::NetworkApprovalBroker;
 use crate::network::NetworkApprovalContext;
+use crate::permissions::PermissionsApprovalBroker;
 use crate::process::ProcessManager;
 use crate::process::StartProcessParams;
 use crate::process::terminal_size;
@@ -45,6 +46,7 @@ use crate::protocol::COMMAND_EXEC_RESIZE_METHOD;
 use crate::protocol::COMMAND_EXEC_TERMINATE_METHOD;
 use crate::protocol::COMMAND_EXEC_WRITE_METHOD;
 use crate::protocol::INITIALIZE_METHOD;
+use crate::protocol::SandboxCommandExecParams;
 use crate::protocol::internal_error;
 use crate::protocol::invalid_params;
 use crate::protocol::invalid_request;
@@ -60,6 +62,7 @@ pub(crate) struct Server {
     process_manager: ProcessManager,
     network_proxy_config: Option<NetworkProxyConfig>,
     network_approvals: NetworkApprovalBroker,
+    permissions_approvals: PermissionsApprovalBroker,
     next_connection_id: AtomicU64,
 }
 
@@ -84,6 +87,7 @@ pub(crate) async fn run(args: Args) -> anyhow::Result<()> {
         process_manager: ProcessManager::default(),
         network_proxy_config,
         network_approvals: NetworkApprovalBroker::default(),
+        permissions_approvals: PermissionsApprovalBroker::default(),
         next_connection_id: AtomicU64::new(1),
     });
     let shutdown = CancellationToken::new();
@@ -110,24 +114,30 @@ impl Server {
 
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         self.network_approvals.connection_closed(connection_id);
+        self.permissions_approvals.connection_closed(connection_id);
         self.process_manager.connection_closed(connection_id).await;
     }
 
     pub(crate) async fn handle_message(
-        &self,
+        self: &Arc<Self>,
         connection_id: ConnectionId,
         writer: &ConnectionWriter,
+        connection_cancellation: &CancellationToken,
         initialized: &mut bool,
         message: JSONRPCMessage,
     ) {
         let request = match message {
             JSONRPCMessage::Request(request) => request,
             JSONRPCMessage::Response(response) => {
+                self.permissions_approvals
+                    .handle_response(connection_id, response.clone());
                 self.network_approvals
                     .handle_response(connection_id, response);
                 return;
             }
             JSONRPCMessage::Error(error) => {
+                self.permissions_approvals
+                    .handle_error(connection_id, error.clone());
                 self.network_approvals.handle_error(connection_id, error);
                 return;
             }
@@ -167,7 +177,12 @@ impl Server {
 
         let request_id = request.id.clone();
         let result = self
-            .handle_initialized_request(connection_id, writer.clone(), request)
+            .handle_initialized_request(
+                connection_id,
+                writer.clone(),
+                connection_cancellation.clone(),
+                request,
+            )
             .await;
         if let Err(err) = result {
             send_error(writer, request_id, err).await;
@@ -175,18 +190,48 @@ impl Server {
     }
 
     async fn handle_initialized_request(
-        &self,
+        self: &Arc<Self>,
         connection_id: ConnectionId,
         writer: ConnectionWriter,
+        connection_cancellation: CancellationToken,
         request: JSONRPCRequest,
     ) -> Result<(), JSONRPCErrorError> {
         match request.method.as_str() {
             COMMAND_EXEC_METHOD => {
-                let params = parse_params::<CommandExecParams>(&request)?;
-                let start = self
-                    .prepare_command_exec(connection_id, writer, request.id, params)
-                    .await?;
-                self.process_manager.start(start).await
+                let params = parse_params::<SandboxCommandExecParams>(&request)?;
+                if params.additional_permissions.is_none() {
+                    let start = self
+                        .prepare_command_exec(
+                            connection_id,
+                            writer,
+                            connection_cancellation,
+                            request.id,
+                            params,
+                        )
+                        .await?;
+                    return self.process_manager.start(start).await;
+                }
+                let server = Arc::clone(self);
+                tokio::spawn(async move {
+                    let request_id = request.id;
+                    let result = server
+                        .prepare_command_exec(
+                            connection_id,
+                            writer.clone(),
+                            connection_cancellation,
+                            request_id.clone(),
+                            params,
+                        )
+                        .await;
+                    let result = match result {
+                        Ok(start) => server.process_manager.start(start).await,
+                        Err(err) => Err(err),
+                    };
+                    if let Err(err) = result {
+                        send_error(&writer, request_id, err).await;
+                    }
+                });
+                Ok(())
             }
             COMMAND_EXEC_WRITE_METHOD => {
                 let params = parse_params::<CommandExecWriteParams>(&request)?;
@@ -202,6 +247,13 @@ impl Server {
             }
             COMMAND_EXEC_TERMINATE_METHOD => {
                 let params = parse_params::<CommandExecTerminateParams>(&request)?;
+                if self
+                    .permissions_approvals
+                    .cancel_process(connection_id, &params.process_id)
+                {
+                    send_result(&writer, request.id, CommandExecTerminateResponse {}).await;
+                    return Ok(());
+                }
                 let response = self
                     .process_manager
                     .terminate(connection_id, params)
@@ -217,9 +269,14 @@ impl Server {
         &self,
         connection_id: ConnectionId,
         writer: ConnectionWriter,
+        connection_cancellation: CancellationToken,
         request_id: RequestId,
-        params: CommandExecParams,
+        params: SandboxCommandExecParams,
     ) -> Result<StartProcessParams, JSONRPCErrorError> {
+        let SandboxCommandExecParams {
+            command_exec: params,
+            additional_permissions,
+        } = params;
         if params.command.is_empty() {
             return Err(invalid_request("command must not be empty"));
         }
@@ -251,6 +308,26 @@ impl Server {
             .cwd
             .as_deref()
             .map_or_else(|| self.cwd.clone(), |cwd| self.cwd.join(cwd));
+        let additional_permissions = additional_permissions
+            .map(codex_protocol::models::AdditionalPermissionProfile::try_from)
+            .transpose()
+            .map_err(|err| invalid_params(format!("invalid additionalPermissions: {err}")))?
+            .map(codex_sandboxing::policy_transforms::normalize_additional_permissions)
+            .transpose()
+            .map_err(|err| invalid_params(format!("invalid additionalPermissions: {err}")))?
+            .filter(|permissions| !permissions.is_empty());
+        if let Some(additional_permissions) = additional_permissions.as_ref() {
+            self.permissions_approvals
+                .request_approval(
+                    connection_id,
+                    writer.clone(),
+                    params.process_id.clone(),
+                    params.command.clone(),
+                    cwd.clone(),
+                    additional_permissions.clone().into(),
+                )
+                .await?;
+        }
         let mut env = shell_environment::create_env(&self.shell_environment_policy, None);
         if let Some(env_overrides) = params.env {
             for (key, value) in env_overrides {
@@ -294,6 +371,10 @@ impl Server {
             .as_ref()
             .map(|policy| permission_profile_from_sandbox_policy(policy, &self.cwd))
             .unwrap_or_else(|| self.default_permission_profile.clone());
+        let permission_profile = codex_sandboxing::policy_transforms::effective_permission_profile(
+            &permission_profile,
+            additional_permissions.as_ref(),
+        );
         let execution_cancellation = CancellationToken::new();
         let (network, network_proxy_handle) = match self.network_proxy_config.as_ref() {
             Some(config) => {
@@ -336,6 +417,7 @@ impl Server {
 
         Ok(StartProcessParams {
             connection_id,
+            connection_cancellation,
             writer,
             request_id,
             process_id: params.process_id,
