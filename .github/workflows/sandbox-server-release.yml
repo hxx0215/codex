@@ -101,7 +101,7 @@ jobs:
         shell: bash
         run: nix build .#sandbox-server-static --print-build-logs
 
-      - name: Strip, verify, and package binaries
+      - name: Stage and strip binaries
         env:
           SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
           TARGET: ${{ matrix.target }}
@@ -111,12 +111,9 @@ jobs:
           set -euo pipefail
 
           package_name="codex-sandbox-server-${VERSION}-${TARGET}"
-          archive_name="${package_name}.tar.gz"
           package_root="${RUNNER_TEMP}/${package_name}"
-          output_dir="dist/${TARGET}"
-          source_date_epoch="$(git show -s --format=%ct "${SOURCE_SHA}")"
 
-          mkdir -p "${package_root}/bin" "${output_dir}"
+          mkdir -p "${package_root}/bin"
           cp -L result/bin/codex-sandbox-server "${package_root}/bin/"
           cp -L result/bin/codex-linux-sandbox "${package_root}/bin/"
           cp LICENSE NOTICE "${package_root}/"
@@ -133,13 +130,72 @@ jobs:
             "${package_root}/bin/codex-sandbox-server" \
             "${package_root}/bin/codex-linux-sandbox"
 
-          test "$("${package_root}/bin/codex-sandbox-server" --version)" = \
-            "codex-sandbox-server ${VERSION}"
-          "${package_root}/bin/codex-linux-sandbox" --help > /dev/null
-          file "${package_root}/bin/codex-sandbox-server" | grep -F 'static-pie linked'
-          file "${package_root}/bin/codex-linux-sandbox" | grep -F 'static-pie linked'
-          ldd "${package_root}/bin/codex-sandbox-server" 2>&1 | grep -F 'statically linked'
-          ldd "${package_root}/bin/codex-linux-sandbox" 2>&1 | grep -F 'statically linked'
+          ls -lh \
+            "${package_root}/bin/codex-sandbox-server" \
+            "${package_root}/bin/codex-linux-sandbox"
+
+      - name: Verify staged binaries
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_name="codex-sandbox-server-${VERSION}-${TARGET}"
+          package_root="${RUNNER_TEMP}/${package_name}"
+          server="${package_root}/bin/codex-sandbox-server"
+          helper="${package_root}/bin/codex-linux-sandbox"
+
+          actual_version="$("${server}" --version)"
+          echo "sandbox server version: ${actual_version}"
+          if [[ "${actual_version}" != "codex-sandbox-server ${VERSION}" ]]; then
+            echo "Expected codex-sandbox-server ${VERSION}, got ${actual_version}." >&2
+            exit 1
+          fi
+          if ! "${helper}" --help > /dev/null; then
+            echo "codex-linux-sandbox --help failed." >&2
+            exit 1
+          fi
+
+          for binary in "${server}" "${helper}"; do
+            description="$(file -b "${binary}")"
+            echo "$(basename "${binary}"): ${description}"
+            if [[ "${description}" != *"ELF 64-bit LSB"* ]]; then
+              echo "$(basename "${binary}") is not a 64-bit Linux ELF." >&2
+              exit 1
+            fi
+            if [[ "${description}" != *"static-pie linked"* && \
+              "${description}" != *"statically linked"* ]]; then
+              echo "$(basename "${binary}") is not statically linked." >&2
+              exit 1
+            fi
+
+            program_headers="$(readelf -lW "${binary}")"
+            if grep -q ' INTERP ' <<< "${program_headers}"; then
+              echo "$(basename "${binary}") unexpectedly contains a dynamic interpreter." >&2
+              exit 1
+            fi
+
+            ldd_output="$(ldd "${binary}" 2>&1 || true)"
+            echo "ldd $(basename "${binary}"): ${ldd_output}"
+          done
+
+      - name: Create archive and checksum
+        env:
+          SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_name="codex-sandbox-server-${VERSION}-${TARGET}"
+          archive_name="${package_name}.tar.gz"
+          output_dir="dist/${TARGET}"
+          source_date_epoch="$(git show -s --format=%ct "${SOURCE_SHA}")"
+
+          mkdir -p "${output_dir}"
 
           tar \
             --sort=name \
