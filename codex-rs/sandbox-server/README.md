@@ -30,83 +30,8 @@ miss 也会挂起原网络请求，批准后继续同一条连接，不会重跑
 
 ## 编译与发布
 
-正式发布应从仓库根目录构建 musl static PIE 包：
-
-```bash
-nix build .#sandbox-server
-```
-
-Linux 上的 `sandbox-server` 默认指向当前 CPU 架构对应的静态包，也可以显式构建
-`nix build .#sandbox-server-static`。构建结果同时包含：
-
-```text
-result/bin/codex-sandbox-server
-result/bin/codex-linux-sandbox
-```
-
-两个文件都没有动态加载器、glibc/musl shared library 或 `/nix/store` 运行时依赖。用 `-L`
-解引用 Nix result symlink 后即可复制到其他同 CPU 架构的 Linux 机器：
-
-```bash
-mkdir -p dist
-cp -L result/bin/codex-sandbox-server dist/
-cp -L result/bin/codex-linux-sandbox dist/
-```
-
-发布目录保持：
-
-```text
-dist/
-├── codex-sandbox-server
-└── codex-linux-sandbox
-```
-
-服务会自动查找与自身同目录的 `codex-linux-sandbox`。也可以通过
-`--codex-linux-sandbox-exe` 显式指定 helper。使用 managed sandbox profile 时必须
-保证 helper 可用；`{"type":"disabled"}` 不使用外层 filesystem sandbox。
-
-发布前验证两个 ELF：
-
-```bash
-file dist/codex-sandbox-server dist/codex-linux-sandbox
-ldd dist/codex-sandbox-server
-ldd dist/codex-linux-sandbox
-```
-
-`file` 应显示 `static-pie linked`，`ldd` 应显示 `statically linked`。静态包支持
-`x86_64-linux` 和 `aarch64-linux`，产物不能跨 CPU 架构运行。
-
-日常开发仍可用 Cargo 构建本机动态版本，但不要发布 `target/release` 里的 Nix dev-shell
-产物；它们可能包含写死的 `/nix/store` interpreter/RUNPATH。
-
-### GitHub Release workflow
-
-仓库提供 `.github/workflows/sandbox-server-release.yml`。该 workflow 通过 GitHub Actions 页面
-手动运行，输入不带 `v` 的 `X.Y.Z` 版本号，例如 `0.1.0`。运行时应选择准备发布的 source ref。
-
-workflow 会：
-
-1. 确认 `sandbox-server-vX.Y.Z` tag 和 release 尚不存在。
-2. 只在 CI checkout 中把 workspace placeholder version 临时替换成输入版本。
-3. 在原生 x86_64 和 aarch64 Linux runner 上执行 Nix musl static build。
-4. strip 并验证两个 ELF，随后把 sibling binaries、`LICENSE`、`NOTICE`、`VERSION` 和
-   `SOURCE_COMMIT` 打进架构独立的 `tar.gz`。
-5. 生成每个 archive 的 `.sha256`、合并的 `SHA256SUMS` 和机器可读的 `manifest.json`。
-6. 在当前 GitHub repository 创建 `sandbox-server-vX.Y.Z` tag 和不可覆盖的 Release。
-
-Release asset 名称如下：
-
-```text
-codex-sandbox-server-0.1.0-x86_64-unknown-linux-musl.tar.gz
-codex-sandbox-server-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
-codex-sandbox-server-0.1.0-aarch64-unknown-linux-musl.tar.gz
-codex-sandbox-server-0.1.0-aarch64-unknown-linux-musl.tar.gz.sha256
-SHA256SUMS
-manifest.json
-```
-
-同一版本不会被重新发布或覆盖。内容有变化时必须递增版本号，以保证已被其他项目 pin 的 URL 和
-SHA-256 始终表示相同字节。
+本地 Nix 静态构建、跨机器复制、GitHub Release workflow、固定 latest 下载地址和 SHA-256
+校验见 [RELEASE.md](RELEASE.md)。
 
 ## 启动参数
 
@@ -374,5 +299,6 @@ just fmt
 just bazel-lock-update
 ```
 
-上游同步流程见 [UPSTREAM_SYNC.md](UPSTREAM_SYNC.md)，Deno 父服务示例见
-[DENO_INTEGRATION.md](DENO_INTEGRATION.md)，完整通信协议见 [PROTOCOL.md](PROTOCOL.md)。
+构建发布见 [RELEASE.md](RELEASE.md)，上游同步流程见 [UPSTREAM_SYNC.md](UPSTREAM_SYNC.md)，
+Deno 父服务示例见 [DENO_INTEGRATION.md](DENO_INTEGRATION.md)，完整通信协议见
+[PROTOCOL.md](PROTOCOL.md)。

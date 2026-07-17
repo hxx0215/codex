@@ -14,7 +14,7 @@
 
 ## 准备发布目录
 
-先按 [README.md](README.md) 使用 `nix build .#sandbox-server` 构建静态包，然后准备：
+先按 [RELEASE.md](RELEASE.md) 使用 `nix build .#sandbox-server` 构建静态包，然后准备：
 
 ```text
 dist/

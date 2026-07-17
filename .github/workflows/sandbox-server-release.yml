@@ -247,10 +247,17 @@ jobs:
 
           cd dist
           sha256sum --check ./*.tar.gz.sha256
-          sha256sum ./*.tar.gz > SHA256SUMS
 
           x86_file="codex-sandbox-server-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
           arm64_file="codex-sandbox-server-${VERSION}-aarch64-unknown-linux-musl.tar.gz"
+          x86_latest_file="codex-sandbox-server-x86_64-unknown-linux-musl.tar.gz"
+          arm64_latest_file="codex-sandbox-server-aarch64-unknown-linux-musl.tar.gz"
+          cp "${x86_file}" "${x86_latest_file}"
+          cp "${arm64_file}" "${arm64_latest_file}"
+          sha256sum "${x86_latest_file}" > "${x86_latest_file}.sha256"
+          sha256sum "${arm64_latest_file}" > "${arm64_latest_file}.sha256"
+          sha256sum ./*.tar.gz > SHA256SUMS
+
           x86_sha="$(sha256sum "${x86_file}" | awk '{print $1}')"
           arm64_sha="$(sha256sum "${arm64_file}" | awk '{print $1}')"
 
@@ -259,8 +266,10 @@ jobs:
             --arg tag "${RELEASE_TAG}" \
             --arg commit "${SOURCE_SHA}" \
             --arg x86_file "${x86_file}" \
+            --arg x86_latest_file "${x86_latest_file}" \
             --arg x86_sha "${x86_sha}" \
             --arg arm64_file "${arm64_file}" \
+            --arg arm64_latest_file "${arm64_latest_file}" \
             --arg arm64_sha "${arm64_sha}" \
             '{
               version: $version,
@@ -269,10 +278,12 @@ jobs:
               artifacts: {
                 "x86_64-linux": {
                   file: $x86_file,
+                  latestFile: $x86_latest_file,
                   sha256: $x86_sha
                 },
                 "aarch64-linux": {
                   file: $arm64_file,
+                  latestFile: $arm64_latest_file,
                   sha256: $arm64_sha
                 }
               }
@@ -284,7 +295,7 @@ jobs:
           tag_name: ${{ needs.metadata.outputs.release_tag }}
           target_commitish: ${{ needs.metadata.outputs.source_sha }}
           name: codex-sandbox-server ${{ needs.metadata.outputs.version }}
-          make_latest: false
+          make_latest: true
           body: |
             Static Linux builds of `codex-sandbox-server` and its sibling
             `codex-linux-sandbox` helper.
