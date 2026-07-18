@@ -579,7 +579,10 @@ where
 
 async fn wait_for_path(path: &Path) -> Result<()> {
     let deadline = Instant::now() + TEST_TIMEOUT;
-    while !path.exists() {
+    while !fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
+        .unwrap_or(false)
+    {
         if Instant::now() >= deadline {
             anyhow::bail!("timed out waiting for {}", path.display());
         }
