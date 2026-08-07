@@ -188,3 +188,16 @@ cargo tree -p codex-sandbox-server
 
 本 crate 不应直接依赖 `codex-tui` 或 app-server implementation crate。复用 app-server 的
 protocol crate、Codex core sandbox construction 和 PTY crate 是预期行为。
+
+## 同步记录
+
+### 2026-08-07
+
+- 上次同步基点：`b8b61bc692517adcd18622df260f2ddd80635122`。
+- 本次上游目标：`6db53df37f4e87cbf4a01888168c11c4d356f199`。
+- 上游 PTY/pipe spawn API 增加了 inherited file descriptors 参数；服务端为当前请求传入空
+  列表，保持服务不继承额外描述符。
+- `FileSystemSandboxEntry` 增加 `missing_path_behavior`；服务端权限 fixture 显式保留默认值。
+- 集成测试在 Cargo 环境中显式注入 `codex-linux-sandbox` helper；没有 helper 时跳过需要真实
+  Linux sandbox 的 accepted-permission 测试，避免把测试环境差异误报为服务回归。
+- Nix 的 vendored Git 依赖哈希按新上游源码更新，静态 musl 构建同时验证 server 与 helper。

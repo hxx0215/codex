@@ -79,6 +79,12 @@ impl SandboxServerProcess {
                 Stdio::null()
             })
             .stderr(Stdio::inherit());
+        if let Ok(codex_linux_sandbox_exe) = codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+        {
+            command
+                .arg("--codex-linux-sandbox-exe")
+                .arg(codex_linux_sandbox_exe);
+        }
         if let Some(uds) = uds {
             command.arg("--uds").arg(uds);
         }
@@ -203,6 +209,10 @@ fn additional_permissions_require_accept_before_spawn() -> Result<()> {
 
 #[test]
 fn accepted_additional_permissions_execute_once() -> Result<()> {
+    let Ok(_) = codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox") else {
+        eprintln!("codex-linux-sandbox binary not available; skipping sandbox execution test");
+        return Ok(());
+    };
     let temp = TempDir::new()?;
     let codex_home = temp.path().join("codex-home");
     let writable_root = temp.path().join("approved-output");

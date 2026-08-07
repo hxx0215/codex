@@ -18,12 +18,14 @@ fn effective_profile_preserves_base_restrictions_and_adds_write() {
         FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: readable },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::GlobPattern {
                 pattern: "**/.env".to_string(),
             },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         },
     ];
     let base_policy = FileSystemSandboxPolicy::restricted(base_entries.clone());
@@ -32,6 +34,7 @@ fn effective_profile_preserves_base_restrictions_and_adds_write() {
     let write_entry = FileSystemSandboxEntry {
         path: FileSystemPath::Path { path: writable },
         access: FileSystemAccessMode::Write,
+        missing_path_behavior: None,
     };
     let additional_permissions = AdditionalPermissionProfile {
         network: None,
