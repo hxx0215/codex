@@ -24,51 +24,41 @@
       cargoToml = builtins.fromTOML (builtins.readFile ./codex-rs/Cargo.toml);
       cargoVersion = cargoToml.workspace.package.version;
       cargoLock = builtins.fromTOML (builtins.readFile ./codex-rs/Cargo.lock);
-      rustyV8Version = (builtins.head (builtins.filter (package: package.name == "v8") cargoLock.package)).version;
+      cargoV8Version = (builtins.head (builtins.filter (package: package.name == "v8") cargoLock.package)).version;
       rustToolchain = builtins.fromTOML (builtins.readFile ./codex-rs/rust-toolchain.toml);
       rustVersion = rustToolchain.toolchain.channel;
-      rustyV8ArchiveBySystem = {
-        x86_64-linux = {
-          url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_release_x86_64-unknown-linux-gnu.a.gz";
-          hash = "sha256-iu2YY323533Iv7i7R1nsW95HLQv3lD9Y4OYqNQlFxVk=";
+
+      # The prebuilt rusty_v8 archives are fetched from URLs templated on the v8
+      # crate version, but their hashes are pinned literals.  When Cargo.lock
+      # bumps v8 the URLs follow automatically and the hashes do not, so keep the
+      # two in lockstep here: otherwise the mismatch only surfaces as an opaque
+      # fixed-output hash error tens of minutes into a release build.
+      v8Pins = builtins.fromJSON (builtins.readFile ./nix/v8-pins.json);
+      rustyV8Version =
+        if v8Pins.version == cargoV8Version
+        then cargoV8Version
+        else throw ''
+          rusty_v8 pin drift: codex-rs/Cargo.lock wants v8 ${cargoV8Version},
+          but nix/v8-pins.json pins ${v8Pins.version}.
+          Run ./nix/update-v8-pins.sh to refresh the pinned hashes.
+        '';
+
+      rustyV8ArchiveBySystem = nixpkgs.lib.mapAttrs (_: pin: {
+        url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_release_${pin.target}.a.gz";
+        inherit (pin) hash;
+      }) v8Pins.gnu;
+
+      rustyV8MuslBySystem = nixpkgs.lib.mapAttrs (_: pin: {
+        inherit (pin) target;
+        archive = {
+          url = "https://github.com/openai/codex/releases/download/rusty-v8-v${rustyV8Version}/librusty_v8_release_${pin.target}.a.gz";
+          hash = pin.archiveHash;
         };
-        aarch64-linux = {
-          url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_release_aarch64-unknown-linux-gnu.a.gz";
-          hash = "sha256-+XdRJ8pk3MSjZi0BpSGizvuluY+DOUOog9hHc7Kv88U=";
+        bindings = {
+          url = "https://github.com/openai/codex/releases/download/rusty-v8-v${rustyV8Version}/src_binding_release_${pin.target}.rs";
+          hash = pin.bindingsHash;
         };
-        x86_64-darwin = {
-          url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_release_x86_64-apple-darwin.a.gz";
-          hash = "sha256-eUlAo4o/ZrfvUqXwA8awlPdDrQQKZK+z082frUlADwc=";
-        };
-        aarch64-darwin = {
-          url = "https://github.com/denoland/rusty_v8/releases/download/v${rustyV8Version}/librusty_v8_release_aarch64-apple-darwin.a.gz";
-          hash = "sha256-+rsuyNO6Wm3qY9uaNalg3FypheujLzQrm6Sqocc0sv4=";
-        };
-      };
-      rustyV8MuslBySystem = {
-        x86_64-linux = {
-          target = "x86_64-unknown-linux-musl";
-          archive = {
-            url = "https://github.com/openai/codex/releases/download/rusty-v8-v${rustyV8Version}/librusty_v8_release_x86_64-unknown-linux-musl.a.gz";
-            hash = "sha256-IyqGCmB5DcWa+Z42Dh87K6iCyKGqrrBVoqSC7dvOjHA=";
-          };
-          bindings = {
-            url = "https://github.com/openai/codex/releases/download/rusty-v8-v${rustyV8Version}/src_binding_release_x86_64-unknown-linux-musl.rs";
-            hash = "sha256-XbPsB4NTHRKGKj843VpnknNVDmeWImC4HwfmEqaKDCQ=";
-          };
-        };
-        aarch64-linux = {
-          target = "aarch64-unknown-linux-musl";
-          archive = {
-            url = "https://github.com/openai/codex/releases/download/rusty-v8-v${rustyV8Version}/librusty_v8_release_aarch64-unknown-linux-musl.a.gz";
-            hash = "sha256-iJFVsJmi6sBaExdZlCV+86YUAgG7QRt0tQMz9Ctghxc=";
-          };
-          bindings = {
-            url = "https://github.com/openai/codex/releases/download/rusty-v8-v${rustyV8Version}/src_binding_release_aarch64-unknown-linux-musl.rs";
-            hash = "sha256-XbPsB4NTHRKGKj843VpnknNVDmeWImC4HwfmEqaKDCQ=";
-          };
-        };
-      };
+      }) v8Pins.musl;
 
       # When building from a release commit the Cargo.toml already carries the
       # real version (e.g. "0.101.0").  On the main branch it is the placeholder

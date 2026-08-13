@@ -1,0 +1,34 @@
+{
+  "_comment": "Pinned hashes for prebuilt rusty_v8 archives. Regenerate with ./nix/update-v8-pins.sh whenever codex-rs/Cargo.lock bumps the v8 crate.",
+  "version": "150.4.0",
+  "gnu": {
+    "x86_64-linux": {
+      "target": "x86_64-unknown-linux-gnu",
+      "hash": "sha256-WGn9twcbHyHyAKl86X0gElh34PMc2ALtmd4sU/SIsGw="
+    },
+    "aarch64-linux": {
+      "target": "aarch64-unknown-linux-gnu",
+      "hash": "sha256-txd9Uq0zNycv4NO453gjnIIalcJdWVnexiue/WVPfdM="
+    },
+    "x86_64-darwin": {
+      "target": "x86_64-apple-darwin",
+      "hash": "sha256-5ex9E/kUgT6/IB1Ee/j9J2h7exkuFsR/KCb+VBUXHyk="
+    },
+    "aarch64-darwin": {
+      "target": "aarch64-apple-darwin",
+      "hash": "sha256-zNj4FIW4IsWxiuun+d65KaM4LYasZzu/DzZvBod+axA="
+    }
+  },
+  "musl": {
+    "x86_64-linux": {
+      "target": "x86_64-unknown-linux-musl",
+      "archiveHash": "sha256-aU+qfGE20yGIYt9iwp83hcvM4kGXfaMYPdravwkEDd8=",
+      "bindingsHash": "sha256-dyeCauR5vbZF6Acjn7EtH44uI956bPFvXuWSaQ0dhQY="
+    },
+    "aarch64-linux": {
+      "target": "aarch64-unknown-linux-musl",
+      "archiveHash": "sha256-sWb+hzWBLSWP/QyNnAZkkcSB4VelZsR0ya4OCh+Syfc=",
+      "bindingsHash": "sha256-dyeCauR5vbZF6Acjn7EtH44uI956bPFvXuWSaQ0dhQY="
+    }
+  }
+}

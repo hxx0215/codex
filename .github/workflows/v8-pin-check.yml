@@ -1,0 +1,70 @@
+name: v8-pin-check
+
+# The prebuilt rusty_v8 archive URLs are templated on the v8 crate version from
+# codex-rs/Cargo.lock, so an upstream merge that bumps v8 repoints every fetch
+# at new bytes while nix/v8-pins.json still holds the old hashes.  Catch that
+# here, on the merge that causes it, rather than tens of minutes into a release.
+
+on:
+  push:
+    paths:
+      - "codex-rs/Cargo.lock"
+      - "flake.nix"
+      - "nix/v8-pins.json"
+      - "nix/update-v8-pins.sh"
+      - ".github/workflows/v8-pin-check.yml"
+  pull_request:
+    paths:
+      - "codex-rs/Cargo.lock"
+      - "flake.nix"
+      - "nix/v8-pins.json"
+      - "nix/update-v8-pins.sh"
+      - ".github/workflows/v8-pin-check.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}::${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pins:
+    name: Verify rusty_v8 pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      # Cheap: fails in seconds with an actionable message when the pinned
+      # version has fallen behind Cargo.lock.
+      - name: Evaluate flake packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for system in x86_64-linux aarch64-linux; do
+            nix eval --raw ".#packages.${system}.sandbox-server-static.drvPath" > /dev/null
+            echo "evaluated sandbox-server-static for ${system}"
+          done
+
+      # Authoritative: re-downloads every pinned artifact and recomputes its
+      # hash, so it also catches a release asset being replaced in place.
+      - name: Regenerate pins and check for drift
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./nix/update-v8-pins.sh
+          if ! git diff --exit-code -- nix/v8-pins.json; then
+            echo "::error::nix/v8-pins.json is stale. Run ./nix/update-v8-pins.sh and commit the result." >&2
+            exit 1
+          fi
+          echo "rusty_v8 pins are up to date."
