@@ -197,7 +197,7 @@ type CommandExecParams = {
 | `timeoutMs` | 非负整数毫秒。不能与 `disableTimeout` 同时设置。 |
 | `disableTimeout` | 完全禁用命令 timeout。 |
 | `cwd` | 省略时使用服务启动 cwd；相对路径以服务启动 cwd 为基准解析。 |
-| `env` | 合并到服务根据 shell environment policy 生成的环境。字符串覆盖，`null` 删除变量。 |
+| `env` | 合并到服务根据 shell environment policy 生成的环境。字符串覆盖，`null` 删除变量；上游标记为不可继承的内部变量始终被过滤。 |
 | `size` | PTY 字符单元尺寸，`rows` 和 `cols` 必须大于零，且只允许在 `tty: true` 时传入。 |
 | `sandboxPolicy` | 覆盖本次命令的基础 sandbox policy。 |
 | `permissionProfile` | 上游字段，但 sandbox-server 当前明确拒绝；使用启动 profile、`sandboxPolicy` 或 `additionalPermissions`。 |

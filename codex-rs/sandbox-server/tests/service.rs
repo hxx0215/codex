@@ -430,6 +430,93 @@ fn stdio_requires_initialize_and_returns_tagged_nonzero_result() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn command_exec_scrubs_non_inheritable_environment_overrides() -> Result<()> {
+    let temp = TempDir::new()?;
+    let codex_home = temp.path().join("codex-home");
+    let mut server = SandboxServerProcess::spawn(
+        temp.path(),
+        &codex_home,
+        /*uds*/ None,
+        /*capture_stdout*/ true,
+    )?;
+    server.send_stdio(&initialize_request(/*id*/ 1))?;
+    let _ = server.recv_stdio()?;
+    server.send_stdio(&json!({
+        "id": 2,
+        "method": "command/exec",
+        "params": {
+            "command": [
+                "sh", "-c",
+                "printf '%s|%s|%s' \"$VISIBLE\" \"${NODE_REPL_AUTH_TOKEN-unset}\" \"${openai_identity_token_file-unset}\""
+            ],
+            "env": {
+                "VISIBLE": "kept",
+                "NODE_REPL_AUTH_TOKEN": "test-only-token",
+                "openai_identity_token_file": "/test-only/identity"
+            }
+        }
+    }))?;
+    assert_eq!(
+        server.recv_stdio()?,
+        json!({
+            "id": 2,
+            "result": {
+                "type": "completed",
+                "exitCode": 0,
+                "stdout": "kept|unset|unset",
+                "stderr": ""
+            }
+        })
+    );
+    server.close_stdin();
+    assert!(server.wait()?.success());
+    Ok(())
+}
+
+#[test]
+fn command_exec_honors_explicit_and_disabled_timeouts() -> Result<()> {
+    let temp = TempDir::new()?;
+    let codex_home = temp.path().join("codex-home");
+    let mut server = SandboxServerProcess::spawn(
+        temp.path(),
+        &codex_home,
+        /*uds*/ None,
+        /*capture_stdout*/ true,
+    )?;
+    server.send_stdio(&initialize_request(/*id*/ 1))?;
+    let _ = server.recv_stdio()?;
+    for (id, params, exit_code) in [
+        (
+            2,
+            json!({"command": ["sh", "-c", "sleep 30"], "timeoutMs": 50}),
+            124,
+        ),
+        (
+            3,
+            json!({"command": ["sh", "-c", "exit 0"], "disableTimeout": true}),
+            0,
+        ),
+    ] {
+        server.send_stdio(&json!({"id": id, "method": "command/exec", "params": params}))?;
+        assert_eq!(
+            server.recv_stdio()?,
+            json!({
+                "id": id,
+                "result": {
+                    "type": "completed",
+                    "exitCode": exit_code,
+                    "stdout": "",
+                    "stderr": ""
+                }
+            })
+        );
+    }
+    server.close_stdin();
+    assert!(server.wait()?.success());
+    Ok(())
+}
+
 #[tokio::test]
 async fn uds_runs_commands_and_terminates_processes_on_disconnect() -> Result<()> {
     let temp = TempDir::new()?;

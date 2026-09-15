@@ -16,7 +16,7 @@ fn effective_profile_preserves_base_restrictions_and_adds_write() {
     let writable = AbsolutePathBuf::from_absolute_path("/opt/output").expect("absolute write path");
     let base_entries = vec![
         FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path: readable },
+            path: readable.into(),
             access: FileSystemAccessMode::Read,
             missing_path_behavior: None,
         },
@@ -32,7 +32,7 @@ fn effective_profile_preserves_base_restrictions_and_adds_write() {
     let base =
         PermissionProfile::from_runtime_permissions(&base_policy, NetworkSandboxPolicy::Restricted);
     let write_entry = FileSystemSandboxEntry {
-        path: FileSystemPath::Path { path: writable },
+        path: writable.into(),
         access: FileSystemAccessMode::Write,
         missing_path_behavior: None,
     };

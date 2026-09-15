@@ -12,6 +12,7 @@ use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -107,7 +108,9 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
         },
         ResponseItem::FunctionCallOutput {
             id: None,
-            call_id: "mcp-call".to_string(),
+            call_id: Some("mcp-call".to_string()),
+            name: None,
+            namespace: None,
             output: image_output("mcp"),
             internal_chat_message_metadata_passthrough: None,
         },
@@ -136,8 +139,10 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
         },
         ResponseItem::FunctionCallOutput {
             id: None,
-            call_id: "orphan-call".to_string(),
-            output: image_output("orphan"),
+            call_id: None,
+            name: Some("notifications".to_string()),
+            namespace: Some("slack".to_string()),
+            output: image_output("standalone"),
             internal_chat_message_metadata_passthrough: None,
         },
     ];
@@ -147,7 +152,7 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
             &ImagegenArgs {
                 prompt: "change the lighting".to_string(),
                 referenced_image_paths: None,
-                num_last_images_to_include: Some(4),
+                num_last_images_to_include: Some(5),
             },
             &history,
             &[],
@@ -156,7 +161,7 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
         .expect("history-backed edit request should build"),
         ImageRequest::Edit(expected_edit_request(
             "change the lighting",
-            &["user-2", "mcp", "code-mode", "generated"],
+            &["user-2", "mcp", "code-mode", "generated", "standalone"],
         ))
     );
 }
@@ -262,7 +267,9 @@ fn generated_output_returns_image_input_and_output_hint() {
         content_items,
         vec![
             FunctionCallOutputContentItem::InputImage {
-                image_url: format!("data:image/png;base64,{RESULT}"),
+                image: ImageReference::Inline {
+                    image_url: format!("data:image/png;base64,{RESULT}")
+                },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
             FunctionCallOutputContentItem::InputText { text: output_hint },
@@ -307,7 +314,9 @@ fn generated_output_omits_oversized_output_hint() {
     assert_eq!(
         content_items,
         vec![FunctionCallOutputContentItem::InputImage {
-            image_url: format!("data:image/png;base64,{RESULT}"),
+            image: ImageReference::Inline {
+                image_url: format!("data:image/png;base64,{RESULT}")
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }]
     );
@@ -315,14 +324,18 @@ fn generated_output_omits_oversized_output_hint() {
 
 fn input_image(image: &str) -> ContentItem {
     ContentItem::InputImage {
-        image_url: format!("data:image/png;base64,{image}"),
+        image: ImageReference::Inline {
+            image_url: format!("data:image/png;base64,{image}"),
+        },
         detail: None,
     }
 }
 
 fn image_output(image: &str) -> FunctionCallOutputPayload {
     FunctionCallOutputPayload::from_content_items(vec![FunctionCallOutputContentItem::InputImage {
-        image_url: format!("data:image/png;base64,{image}"),
+        image: ImageReference::Inline {
+            image_url: format!("data:image/png;base64,{image}"),
+        },
         detail: None,
     }])
 }

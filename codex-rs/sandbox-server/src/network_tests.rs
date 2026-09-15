@@ -10,6 +10,7 @@ use codex_app_server_protocol::RequestId;
 use codex_network_proxy::NetworkDecision;
 use codex_network_proxy::NetworkMode;
 use codex_network_proxy::NetworkPolicyRequest;
+use codex_network_proxy::NetworkPolicyRequestArgs;
 use codex_network_proxy::NetworkProtocol;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -196,7 +197,7 @@ fn approval_context(writer: ConnectionWriter) -> NetworkApprovalContext {
 }
 
 fn policy_request() -> NetworkPolicyRequest {
-    NetworkPolicyRequest {
+    NetworkPolicyRequest::new(NetworkPolicyRequestArgs {
         protocol: NetworkProtocol::HttpsConnect,
         host: "Example.COM".to_string(),
         port: 443,
@@ -205,8 +206,7 @@ fn policy_request() -> NetworkPolicyRequest {
         method: None,
         command: None,
         exec_policy_hint: None,
-        execution_id: None,
-    }
+    })
 }
 
 async fn send_http_request(

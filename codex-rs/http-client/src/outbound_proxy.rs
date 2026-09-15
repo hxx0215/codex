@@ -18,6 +18,7 @@ use tokio::sync::Semaphore;
 
 use http::HeaderValue;
 
+use crate::NetworkPolicy;
 use crate::chatgpt_cloudflare_cookies::ChatGptCookieStore;
 use crate::custom_ca::BuildCustomCaTransportError;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
@@ -103,6 +104,26 @@ pub enum OutboundProxyPolicy {
     RespectSystemProxy,
 }
 
+/// Privacy-safe macOS system proxy configuration for one outbound destination.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosSystemProxyConfiguration {
+    /// A PAC script or automatic proxy-discovery route applies to the destination.
+    Automatic,
+    /// An explicitly configured HTTP or HTTPS proxy applies.
+    Manual,
+    /// macOS selected a direct connection for the destination.
+    Direct,
+    /// The destination or system proxy settings could not be inspected.
+    Unavailable,
+}
+
+/// Inspects macOS proxy configuration without executing PAC scripts or exposing proxy URLs.
+#[cfg(target_os = "macos")]
+pub fn macos_system_proxy_configuration(request_url: &str) -> MacosSystemProxyConfiguration {
+    macos::configuration(request_url)
+}
+
 /// Resolved proxy route for a concrete outbound destination.
 ///
 /// `TransportDefault` preserves the underlying transport behavior only when system-proxy support
@@ -146,11 +167,13 @@ impl fmt::Debug for OutboundProxyRoute {
 pub struct HttpClientFactory {
     outbound_proxy_policy: OutboundProxyPolicy,
     chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
+    network_policy: NetworkPolicy,
 }
 
 impl PartialEq for HttpClientFactory {
     fn eq(&self, other: &Self) -> bool {
         self.outbound_proxy_policy == other.outbound_proxy_policy
+            && self.network_policy == other.network_policy
             && self
                 .chatgpt_cookie_store
                 .as_ref()
@@ -168,6 +191,7 @@ impl fmt::Debug for HttpClientFactory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpClientFactory")
             .field("outbound_proxy_policy", &self.outbound_proxy_policy)
+            .field("network_policy", &self.network_policy)
             .finish()
     }
 }
@@ -178,7 +202,18 @@ impl HttpClientFactory {
         Self {
             outbound_proxy_policy,
             chatgpt_cookie_store: None,
+            network_policy: NetworkPolicy::unmanaged(),
         }
+    }
+
+    /// Carries the account/configuration owner's application policy into every transport.
+    pub fn with_network_policy(mut self, policy: NetworkPolicy) -> Self {
+        self.network_policy = policy;
+        self
+    }
+
+    pub fn network_policy(&self) -> &NetworkPolicy {
+        &self.network_policy
     }
 
     /// Adds process-scoped cookies to requests made by ChatGPT cookie-store clients.

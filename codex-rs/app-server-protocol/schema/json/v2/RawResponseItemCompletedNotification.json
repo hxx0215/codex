@@ -45,6 +45,18 @@
         }
       ]
     },
+    "ConfigurationReasoning": {
+      "description": "Reasoning settings interpreted by the backend for the routed model.",
+      "properties": {
+        "effort": {
+          "$ref": "#/definitions/ReasoningEffort"
+        }
+      },
+      "required": [
+        "effort"
+      ],
+      "type": "object"
+    },
     "ContentItem": {
       "oneOf": [
         {
@@ -68,6 +80,20 @@
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlContentItem",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
@@ -79,9 +105,6 @@
                 }
               ]
             },
-            "image_url": {
-              "type": "string"
-            },
             "type": {
               "enum": [
                 "input_image"
@@ -91,7 +114,6 @@
             }
           },
           "required": [
-            "image_url",
             "type"
           ],
           "title": "InputImageContentItem",
@@ -176,6 +198,20 @@
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlFunctionCallOutputContentItem",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
@@ -187,9 +223,6 @@
                 }
               ]
             },
-            "image_url": {
-              "type": "string"
-            },
             "type": {
               "enum": [
                 "input_image"
@@ -199,7 +232,6 @@
             }
           },
           "required": [
-            "image_url",
             "type"
           ],
           "title": "InputImageFunctionCallOutputContentItem",
@@ -350,6 +382,11 @@
           "type": "string"
         }
       ]
+    },
+    "ReasoningEffort": {
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
+      "type": "string"
     },
     "ReasoningItemContent": {
       "oneOf": [
@@ -736,7 +773,10 @@
         {
           "properties": {
             "call_id": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "id": {
               "type": [
@@ -754,6 +794,18 @@
                 }
               ]
             },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "output": {
               "$ref": "#/definitions/FunctionCallOutputBody"
             },
@@ -766,7 +818,6 @@
             }
           },
           "required": [
-            "call_id",
             "output",
             "type"
           ],
@@ -1054,6 +1105,27 @@
             "type"
           ],
           "title": "CompactionResponseItem",
+          "type": "object"
+        },
+        {
+          "description": "A durable input control interpreted by the backend at its position in history.",
+          "properties": {
+            "reasoning": {
+              "$ref": "#/definitions/ConfigurationReasoning"
+            },
+            "type": {
+              "enum": [
+                "configuration_update"
+              ],
+              "title": "ConfigurationUpdateResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reasoning",
+            "type"
+          ],
+          "title": "ConfigurationUpdateResponseItem",
           "type": "object"
         },
         {

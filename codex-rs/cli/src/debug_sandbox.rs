@@ -23,7 +23,6 @@ use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_sandboxing::landlock::allow_network_for_proxy;
 use codex_sandboxing::landlock::create_linux_sandbox_command_args_for_permission_profile;
 #[cfg(target_os = "macos")]
 use codex_sandboxing::seatbelt::CreateSeatbeltCommandArgsParams;
@@ -364,6 +363,7 @@ async fn run_command_under_sandbox(
         .map(codex_core::config::StartedNetworkProxy::proxy);
     // Proxy containment depends on whether a proxy is active, not whether its
     // policy came from managed requirements.
+    #[cfg(target_os = "macos")]
     let enforce_managed_network = network.is_some();
     let managed_mitm_ca_trust_bundle_path = match network.as_ref() {
         Some(network) => network.managed_mitm_ca_trust_bundle_path(),
@@ -380,7 +380,7 @@ async fn run_command_under_sandbox(
         SandboxType::Seatbelt => {
             let (file_system_sandbox_policy, network_sandbox_policy) =
                 runtime_permission_profile.to_runtime_permissions();
-            let args = create_seatbelt_command_args(CreateSeatbeltCommandArgsParams {
+            let mut args = create_seatbelt_command_args(CreateSeatbeltCommandArgsParams {
                 command,
                 file_system_sandbox_policy: &file_system_sandbox_policy,
                 network_sandbox_policy,
@@ -392,6 +392,15 @@ async fn run_command_under_sandbox(
                 extra_allow_unix_sockets: allow_unix_sockets,
             })
             .map_err(|err| anyhow::anyhow!(err))?;
+            // This CLI inherits the user's controlling terminal. Keep this deny
+            // after every shared policy allowance so the child cannot queue input
+            // for the unsandboxed shell that resumes when Codex exits.
+            match args.as_mut_slice() {
+                [flag, policy, ..] if flag.as_str() == "-p" => {
+                    policy.push_str("\n(deny file-ioctl (ioctl-command TIOCSTI))");
+                }
+                _ => anyhow::bail!("Seatbelt command is missing its generated policy"),
+            }
             spawn_debug_sandbox_child(
                 PathBuf::from("/usr/bin/sandbox-exec"),
                 args,
@@ -414,13 +423,20 @@ async fn run_command_under_sandbox(
                 .codex_linux_sandbox_exe
                 .expect("codex-linux-sandbox executable not found");
             let network_sandbox_policy = runtime_permission_profile.network_sandbox_policy();
+            let (env, managed_network) = if let Some(network) = network.as_ref() {
+                let prepared =
+                    network.prepare_for_optional_environment(env, /*environment_id*/ None)?;
+                (prepared.env, Some(prepared.sandbox_context))
+            } else {
+                (env, None)
+            };
             let args = create_linux_sandbox_command_args_for_permission_profile(
                 command,
                 cwd.as_path(),
                 &runtime_permission_profile,
                 sandbox_policy_cwd.as_path(),
                 use_legacy_landlock,
-                allow_network_for_proxy(enforce_managed_network),
+                managed_network.as_ref(),
             );
             spawn_debug_sandbox_child(
                 codex_linux_sandbox_exe,
@@ -429,11 +445,7 @@ async fn run_command_under_sandbox(
                 cwd.to_path_buf(),
                 network_sandbox_policy,
                 env,
-                |env_map| {
-                    if let Some(network) = network.as_ref() {
-                        network.apply_to_env(env_map);
-                    }
-                },
+                |_| {},
             )
             .await?
         }
@@ -478,7 +490,21 @@ async fn run_command_under_windows_session(
     use codex_protocol::config_types::WindowsSandboxLevel;
     use codex_windows_sandbox::WindowsSandboxProxySettingsMode;
     use codex_windows_sandbox::WindowsSandboxSessionRequest;
+    use codex_windows_sandbox::resolve_windows_deny_read_paths;
     use codex_windows_sandbox::spawn_windows_sandbox_session_for_level;
+
+    // Setup reconciles persistent deny ACLs against this list. An empty list
+    // would discard the profile's denies, including on subsequent launches.
+    let (mut file_system, _) = permission_profile.to_runtime_permissions();
+    file_system.remove_skip_missing_path_entries();
+    let file_system = file_system.materialize_project_roots_with_workspace_roots(&workspace_roots);
+    let deny_read_paths = match resolve_windows_deny_read_paths(&file_system, &cwd) {
+        Ok(paths) => paths,
+        Err(err) => {
+            eprintln!("windows sandbox failed: {err}");
+            std::process::exit(1);
+        }
+    };
 
     let empty_paths: &[AbsolutePathBuf] = &[];
     let spawned = spawn_windows_sandbox_session_for_level(WindowsSandboxSessionRequest {
@@ -489,14 +515,14 @@ async fn run_command_under_windows_session(
         cwd: cwd.as_path(),
         env_map: env,
         windows_sandbox_level: WindowsSandboxLevel::from_config(config),
-        proxy_settings_mode: WindowsSandboxProxySettingsMode::Reconcile,
+        proxy_settings_mode: WindowsSandboxProxySettingsMode::Preserve,
         proxy_enforced: false,
         network_proxy_restricting_sid: None,
         timeout_ms: None,
         read_roots_override: None,
         read_roots_include_platform_defaults: false,
         write_roots_override: None,
-        deny_read_paths_override: empty_paths,
+        deny_read_paths_override: &deny_read_paths,
         deny_write_paths_override: empty_paths,
         tty: false,
         stdin_open: true,

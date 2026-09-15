@@ -1,6 +1,8 @@
 #![cfg(target_os = "windows")]
 
+use super::WindowsSandboxSessionRequest;
 use super::spawn_windows_sandbox_session_elevated_for_permission_profile;
+use super::spawn_windows_sandbox_session_for_level;
 use super::spawn_windows_sandbox_session_legacy;
 use crate::WindowsSandboxCancellationToken;
 use crate::ipc_framed::Message;
@@ -9,6 +11,7 @@ use crate::ipc_framed::read_frame;
 use crate::run_windows_sandbox_capture;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_pty::ProcessDriver;
@@ -222,6 +225,43 @@ async fn collect_stdout_and_exit(
 }
 
 #[test]
+fn restricted_token_rejects_managed_network_before_spawn() {
+    current_thread_runtime().block_on(async {
+        let cwd = sandbox_cwd();
+        let codex_home = sandbox_home("restricted-token-managed-network");
+        let permission_profile = PermissionProfile::workspace_write();
+        let error = spawn_windows_sandbox_session_for_level(WindowsSandboxSessionRequest {
+            permission_profile: &permission_profile,
+            workspace_roots: &[],
+            codex_home: codex_home.path(),
+            command: Vec::new(),
+            cwd: cwd.as_path(),
+            env_map: HashMap::new(),
+            windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+            proxy_enforced: true,
+            network_proxy_restricting_sid: None,
+            proxy_settings_mode: crate::WindowsSandboxProxySettingsMode::Preserve,
+            timeout_ms: None,
+            read_roots_override: None,
+            read_roots_include_platform_defaults: false,
+            write_roots_override: None,
+            deny_read_paths_override: &[],
+            deny_write_paths_override: &[],
+            tty: false,
+            stdin_open: false,
+            use_private_desktop: false,
+        })
+        .await
+        .expect_err("managed networking must fail before spawning an unelevated sandbox");
+
+        assert_eq!(
+            error.to_string(),
+            "managed networking requires the elevated Windows sandbox backend"
+        );
+    });
+}
+
+#[test]
 fn legacy_non_tty_cmd_emits_output() {
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
@@ -303,6 +343,61 @@ fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
         let stdout = String::from_utf8_lossy(&stdout);
         assert_eq!(exit_code, 23, "stdout={stdout:?}");
         assert!(stdout.contains("ELEVATED-ENV-OK"), "stdout={stdout:?}");
+    });
+}
+
+#[test]
+#[ignore = "requires this test binary in an installed test MSIX, launched with package identity, CODEX_WINDOWS_REGISTERED_CORE=1, and CODEX_HOME provisioned by that package's service in a disposable Windows VM"]
+fn registered_non_tty_cmd_forwards_env_output_and_exit() {
+    assert!(
+        crate::registered_core_requested(),
+        "registered Core opt-in is required"
+    );
+    let codex_home = PathBuf::from(std::env::var_os("CODEX_HOME").expect("fixture CODEX_HOME"));
+    assert!(
+        crate::app_package::registered_setup_is_ready(&codex_home)
+            .expect("validate the installed package and service receipt"),
+        "the test process must have package identity and completed service setup",
+    );
+    let cwd = tempfile::tempdir().expect("isolated command workspace");
+    current_thread_runtime().block_on(async {
+        let mut env_map: HashMap<String, String> = std::env::vars().collect();
+        env_map.insert("CODEX_REGISTERED_TEST".into(), "REGISTERED-ENV-OK".into());
+        let spawned = spawn_windows_sandbox_session_elevated_for_permission_profile(
+            &PermissionProfile::workspace_write(),
+            workspace_roots_for(cwd.path()).as_slice(),
+            &codex_home,
+            vec![
+                "C:\\Windows\\System32\\cmd.exe".into(),
+                "/d".into(),
+                "/c".into(),
+                "echo %CODEX_REGISTERED_TEST%& exit /b 23".into(),
+            ],
+            cwd.path(),
+            env_map,
+            /*proxy_enforced*/ false,
+            /*network_proxy_restricting_sid*/ None,
+            Some(5_000),
+            /*read_roots_override*/ None,
+            /*read_roots_include_platform_defaults*/ true,
+            /*write_roots_override*/ None,
+            &[],
+            &[],
+            /*tty*/ false,
+            /*stdin_open*/ false,
+            /*use_private_desktop*/ true,
+        )
+        .await
+        .expect("launch through the service-recorded alias and authenticated pipes");
+        let (stdout, exit_code) =
+            collect_stdout_and_exit(spawned, &codex_home, Duration::from_secs(10)).await;
+        assert_eq!(
+            (
+                String::from_utf8(stdout).expect("command output"),
+                exit_code
+            ),
+            ("REGISTERED-ENV-OK\r\n".to_owned(), 23),
+        );
     });
 }
 

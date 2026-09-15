@@ -341,6 +341,7 @@ impl Server {
                 }
             }
         }
+        env.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
         let timeout_ms = params
             .timeout_ms
             .map(|timeout_ms| {
@@ -354,7 +355,7 @@ impl Server {
         let expiration = if params.disable_timeout {
             ExecExpiration::Cancellation(CancellationToken::new())
         } else {
-            timeout_ms.into()
+            timeout_ms.map_or(ExecExpiration::DefaultTimeout, ExecExpiration::from)
         };
         let output_bytes_cap = if params.disable_output_cap {
             None
@@ -410,6 +411,7 @@ impl Server {
             &self.cwd,
             &[],
             &self.codex_linux_sandbox_exe,
+            /*codex_self_exe*/ &None,
             /*use_legacy_landlock*/ false,
         )
         .map_err(|err| internal_error(format!("failed to prepare sandbox: {err}")))?;

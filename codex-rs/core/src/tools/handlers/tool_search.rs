@@ -179,7 +179,10 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
         true
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -247,7 +250,7 @@ impl ToolSearchHandler {
         results: impl IntoIterator<Item = &'a ToolSearchEntry>,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
         Ok(coalesce_loadable_tool_specs(
-            results.into_iter().map(|entry| entry.output.clone()),
+            results.into_iter().map(ToolSearchEntry::to_loadable_spec),
         ))
     }
 }

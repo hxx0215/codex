@@ -201,3 +201,28 @@ protocol crate、Codex core sandbox construction 和 PTY crate 是预期行为�
 - 集成测试在 Cargo 环境中显式注入 `codex-linux-sandbox` helper；没有 helper 时跳过需要真实
   Linux sandbox 的 accepted-permission 测试，避免把测试环境差异误报为服务回归。
 - Nix 的 vendored Git 依赖哈希按新上游源码更新，静态 musl 构建同时验证 server 与 helper。
+
+### 2026-09-15
+
+- 上次同步基点：`6db53df37f4e87cbf4a01888168c11c4d356f199`。
+- 本次上游目标：`db078158c302276b63f0d6ae3120433c6ca94a49`。
+- 合并前的分支提交：`ca8795d8be`；保留回退分支
+  `backup/sandbox-before-upstream-20260915`。
+- 上游累计 1,753 个提交、4,494 个文件变化；`Cargo.toml` 和 `Cargo.lock` 自动合并成功。
+- `build_exec_request` 新增 Windows self-executable 参数；Linux 服务显式传入 `None`。
+  `ExecExpiration` 不再从 `Option<u64>` 隐式转换，服务显式保留默认超时、指定超时和禁用超时语义。
+- 权限测试适配上游内部 `PathUri` 类型；网络审批测试改用 `NetworkPolicyRequest::new`，
+  由上游初始化新增加的 disconnect/cancellation 字段。
+- 同步 app-server 的环境变量过滤：`command/exec.env` 也不能重新引入上游标记为不可继承的
+  内部变量。新增服务集成测试覆盖该行为及显式/禁用超时。
+- Nix 更新 crossterm 源码哈希，并补充 MXC 仓库的源码哈希；Linux 依赖其公共类型包
+  `wxc_common`，Windows 执行实现仍由上游的 `cfg(windows)` 限制。
+- Linux 验证：`just test -p codex-sandbox-server -p codex-linux-sandbox` 通过，177 项成功、
+  1 项按现有配置跳过。按本次同步范围仅验证 Linux 沙盒，不运行全仓库测试。
+- `just bazel-lock-update` 成功，`MODULE.bazel.lock` 无需额外调整。
+- `just fix -p codex-sandbox-server` 和 `just fmt` 均成功。
+- `nix build .#sandbox-server` 成功，生成 `x86_64-unknown-linux-musl` 的
+  `codex-sandbox-server` 与 `codex-linux-sandbox`。两者均为 static PIE，
+  经 `file`、`readelf` 和 `ldd` 确认没有动态解释器或共享库依赖。
+- 静态产物冒烟验证通过：初始化、命令执行、只读权限下拒绝写入、单次审批后允许写入，
+  以及关闭 stdin 后正常退出。
